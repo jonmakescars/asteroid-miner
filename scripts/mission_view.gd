@@ -64,7 +64,10 @@ func _ready() -> void:
 			children[parent_id].append(id)
 	_load_ship_dv()
 	_build_ui()
-	_reset()
+	if GameState.has_mission_state:
+		_restore_state()
+	else:
+		_reset()
 
 
 func _load_ship_dv() -> void:
@@ -87,6 +90,36 @@ func _reset() -> void:
 	var radius := float(bodies["earth"]["radius_km"]) + PARKING_ALTITUDE_KM
 	parking_segment = TransferPlanner.circular_segment(radius, earth_gm, start_jd, 0.0)
 	legs = [{"parent": "earth", "segment": parking_segment, "t_start": start_jd, "label": "Parking orbit around Earth"}]
+
+
+## Keeps the mission while another screen is open (see GameState).
+func _save_state() -> void:
+	GameState.has_mission_state = true
+	GameState.time_jd = time_jd
+	GameState.paused = paused
+	GameState.warp_index = warp_index
+	GameState.frame_index = frame_index
+	GameState.target_index = target_picker.selected
+	GameState.message = message
+	GameState.plan = plan
+	GameState.legs = legs
+
+
+func _restore_state() -> void:
+	time_jd = GameState.time_jd
+	paused = GameState.paused
+	warp_index = GameState.warp_index
+	frame_index = GameState.frame_index
+	message = GameState.message
+	plan = GameState.plan
+	legs = GameState.legs
+	parking_segment = legs[0]["segment"]
+	target_picker.select(GameState.target_index)
+
+
+func _goto(scene_path: String) -> void:
+	_save_state()
+	get_tree().change_scene_to_file(scene_path)
 
 
 # ---------------------------------------------------------------- user interface
@@ -116,7 +149,8 @@ func _build_ui() -> void:
 	pause_button = _add_button(row2, "Pause", func() -> void: paused = not paused)
 	_add_button(row2, "Faster", func() -> void: warp_index = mini(warp_index + 1, WARP_STEPS.size() - 1))
 	frame_button = _add_button(row2, "View", func() -> void: frame_index = (frame_index + 1) % FRAMES.size())
-	_add_button(row2, "Ship design", func() -> void: get_tree().change_scene_to_file("res://ship_design.tscn"))
+	_add_button(row2, "Ship design", func() -> void: _goto("res://ship_design.tscn"))
+	_add_button(row2, "Menu", func() -> void: _goto("res://menu.tscn"))
 
 	info_label = Label.new()
 	info_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL

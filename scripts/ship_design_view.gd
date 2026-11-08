@@ -97,6 +97,11 @@ func _build_ui() -> void:
 	box.add_theme_constant_override("separation", 6)
 	margin.add_child(box)
 
+	var menu_button := Button.new()
+	menu_button.text = "Menu"
+	menu_button.custom_minimum_size = Vector2(0, 40)
+	menu_button.pressed.connect(func() -> void: get_tree().change_scene_to_file("res://menu.tscn"))
+	box.add_child(menu_button)
 	var mission_button := Button.new()
 	mission_button.text = "Mission planner"
 	mission_button.custom_minimum_size = Vector2(0, 40)

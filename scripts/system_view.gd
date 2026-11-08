@@ -22,7 +22,10 @@ var time_jd: float = 0.0
 
 
 func _ready() -> void:
+	if OS.has_feature("mobile"):
+		get_window().content_scale_factor = 2.0
 	RenderingServer.set_default_clear_color(Color(0.02, 0.02, 0.05))
+	_add_menu_button()
 	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(DATA_PATH))
 	if typeof(parsed) != TYPE_DICTIONARY:
 		push_error("Cannot read %s (on Android, add *.json to the export filter)." % DATA_PATH)
@@ -41,6 +44,22 @@ func _ready() -> void:
 			focus_ids.append(id)
 
 
+## A small "Menu" button in the top right corner (Escape also works).
+func _add_menu_button() -> void:
+	var layer := CanvasLayer.new()
+	add_child(layer)
+	var button := Button.new()
+	button.text = "Menu"
+	button.set_anchors_preset(Control.PRESET_TOP_RIGHT)
+	button.grow_horizontal = Control.GROW_DIRECTION_BEGIN
+	button.pressed.connect(_open_menu)
+	layer.add_child(button)
+
+
+func _open_menu() -> void:
+	get_tree().change_scene_to_file("res://menu.tscn")
+
+
 func _process(delta: float) -> void:
 	if not paused:
 		time_jd += delta * float(WARP_STEPS[warp_index])
@@ -54,6 +73,8 @@ func _unhandled_input(event: InputEvent) -> void:
 		match key.keycode:
 			KEY_TAB:
 				_next_focus()
+			KEY_ESCAPE:
+				_open_menu()
 			KEY_SPACE:
 				paused = not paused
 			KEY_EQUAL, KEY_KP_ADD, KEY_PERIOD:
