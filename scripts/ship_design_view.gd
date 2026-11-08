@@ -101,21 +101,53 @@ func _add_heading(parent: Control, text: String) -> void:
 	parent.add_child(label)
 
 
-## Adds a label and a slider; returns a Dictionary describing the control.
+## Adds a row with a title, a text box and a unit, plus a slider; returns a Dictionary describing the control.
+## The slider and the text box change the same value. The text box accepts exact numbers.
 func _add_slider(parent: Control, title: String, value_range: Vector2, logarithmic: bool, start: float, unit: String) -> Dictionary:
-	var label := Label.new()
-	parent.add_child(label)
+	var row := HBoxContainer.new()
+	parent.add_child(row)
+	var title_label := Label.new()
+	title_label.text = title
+	title_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	row.add_child(title_label)
+	var edit := LineEdit.new()
+	edit.custom_minimum_size = Vector2(150, 0)
+	edit.alignment = HORIZONTAL_ALIGNMENT_RIGHT
+	edit.select_all_on_focus = true
+	edit.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER_DECIMAL
+	row.add_child(edit)
+	var unit_label := Label.new()
+	unit_label.text = unit
+	unit_label.custom_minimum_size = Vector2(36, 0)
+	row.add_child(unit_label)
+
 	var slider := HSlider.new()
 	slider.min_value = 0.0
 	slider.max_value = 1.0
 	slider.step = 0.001
 	slider.custom_minimum_size = Vector2(0, 40)
 	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
-	var control := {"label": label, "slider": slider, "title": title, "range": value_range, "log": logarithmic, "unit": unit}
-	slider.value = _to_slider(start, control)
-	slider.value_changed.connect(func(_v: float) -> void: _refresh())
 	parent.add_child(slider)
+
+	var control := {"edit": edit, "slider": slider, "range": value_range, "log": logarithmic, "value": start}
+	slider.set_value_no_signal(_to_slider(start, control))
+	slider.value_changed.connect(func(_v: float) -> void:
+		control["value"] = _value_from_slider(control)
+		_refresh())
+	edit.text_submitted.connect(func(text: String) -> void: _apply_text(control, text))
+	edit.focus_exited.connect(func() -> void: _apply_text(control, edit.text))
 	return control
+
+
+## Takes a number typed into a text box: clamps it to the allowed range and moves the slider to match.
+func _apply_text(control: Dictionary, text: String) -> void:
+	var cleaned := text.strip_edges().replace(",", ".")
+	if cleaned.is_valid_float():
+		var value_range: Vector2 = control["range"]
+		var value := clampf(cleaned.to_float(), value_range.x, value_range.y)
+		control["value"] = value
+		(control["slider"] as HSlider).set_value_no_signal(_to_slider(value, control))
+	_refresh()  # also rewrites the text box, which restores the old value if the input was not a number
 
 
 func _to_slider(value: float, control: Dictionary) -> float:
@@ -125,7 +157,7 @@ func _to_slider(value: float, control: Dictionary) -> float:
 	return (value - value_range.x) / (value_range.y - value_range.x)
 
 
-func _value_of(control: Dictionary) -> float:
+func _value_from_slider(control: Dictionary) -> float:
 	var value_range: Vector2 = control["range"]
 	var position: float = (control["slider"] as HSlider).value
 	if control["log"]:
@@ -133,6 +165,10 @@ func _value_of(control: Dictionary) -> float:
 		var step := pow(10.0, floor(log(raw) / log(10.0)) - 2.0)  # three significant figures
 		return round(raw / step) * step
 	return snappedf(value_range.x + position * (value_range.y - value_range.x), 0.01)
+
+
+func _value_of(control: Dictionary) -> float:
+	return float(control["value"])
 
 
 func _num(value: float) -> String:
@@ -185,5 +221,4 @@ func _refresh() -> void:
 
 
 func _update_label(control: Dictionary) -> void:
-	var unit: String = control["unit"]
-	(control["label"] as Label).text = "%s: %s %s" % [control["title"], _num(_value_of(control)), unit]
+	(control["edit"] as LineEdit).text = String.num(_value_of(control), 2)
