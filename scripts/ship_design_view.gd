@@ -4,6 +4,7 @@ extends Control
 ## slider covers small probes and large ships alike.
 
 const ENGINES_PATH := "res://data/engines.json"
+const DESIGN_PATH := "user://ship_design.json"  # read by the mission planner
 const MOBILE_UI_SCALE := 2.5  # phone screens are dense; the UI is scaled up there only
 const PAYLOAD_RANGE := Vector2(100.0, 500000.0)       # kg
 const PROPELLANT_RANGE := Vector2(100.0, 2000000.0)   # kg
@@ -67,6 +68,11 @@ func _build_ui() -> void:
 	box.add_theme_constant_override("separation", 6)
 	margin.add_child(box)
 
+	var mission_button := Button.new()
+	mission_button.text = "Mission planner"
+	mission_button.custom_minimum_size = Vector2(0, 40)
+	mission_button.pressed.connect(func() -> void: get_tree().change_scene_to_file("res://mission.tscn"))
+	box.add_child(mission_button)
 	_add_heading(box, "Ship design (prototype step 5)")
 	payload_ctl = _add_slider(box, "Payload", PAYLOAD_RANGE, true, DEFAULT_PAYLOAD_KG, "kg")
 
@@ -218,7 +224,31 @@ func _refresh() -> void:
 	for reference in REFERENCE_DV:
 		lines.append("   %s: %s km/s" % [reference[0], str(reference[1])])
 	result_label.text = "\n".join(lines)
+	_save_design(stages, payload_kg, analysis)
 
 
 func _update_label(control: Dictionary) -> void:
 	(control["edit"] as LineEdit).text = String.num(_value_of(control), 2)
+
+
+## A click outside the focused text box ends the editing, which applies the typed value.
+func _input(event: InputEvent) -> void:
+	var click := event as InputEventMouseButton
+	if click == null or not click.pressed:
+		return
+	var focused := get_viewport().gui_get_focus_owner()
+	if focused is LineEdit and not focused.get_global_rect().has_point(click.global_position):
+		focused.release_focus()
+
+
+## Saves the current design so that the mission planner can use its delta-v.
+func _save_design(stages: Array, payload_kg: float, analysis: Dictionary) -> void:
+	var file := FileAccess.open(DESIGN_PATH, FileAccess.WRITE)
+	if file == null:
+		return
+	file.store_string(JSON.stringify({
+		"payload_kg": payload_kg,
+		"stages": stages,
+		"total_dv_ms": analysis["total_dv_ms"],
+		"total_mass_kg": analysis["total_mass_kg"],
+	}, "\t"))
