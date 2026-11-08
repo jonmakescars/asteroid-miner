@@ -30,6 +30,9 @@ var engine_order: Array = []     # ids in file order
 var rules: Dictionary = {}
 var payload_ctl: Dictionary = {}
 var stage_ctls: Array = []       # per stage: {"engine": OptionButton, "propellant": ctl, "thrust": ctl, "durability": ctl}
+var ship_name := "Ship 1"
+var start_payload_kg := DEFAULT_PAYLOAD_KG
+var start_stages: Array = []     # starting values of the sliders (defaults, or the last saved design)
 var result_label: Label
 
 
@@ -38,6 +41,7 @@ func _ready() -> void:
 		get_window().content_scale_factor = MOBILE_UI_SCALE
 	if not _load_engines():
 		return
+	_apply_saved_design()
 	_build_ui()
 	_refresh()
 
@@ -52,6 +56,31 @@ func _load_engines() -> bool:
 		engines[engine["id"]] = engine
 		engine_order.append(engine["id"])
 	return true
+
+
+## Starts from the last saved design if there is one, so the design survives switching screens.
+func _apply_saved_design() -> void:
+	start_stages = DEFAULT_STAGES.duplicate(true)
+	if not FileAccess.file_exists(DESIGN_PATH):
+		return
+	var saved: Variant = JSON.parse_string(FileAccess.get_file_as_string(DESIGN_PATH))
+	if typeof(saved) != TYPE_DICTIONARY:
+		return
+	ship_name = str(saved.get("name", ship_name))
+	start_payload_kg = clampf(float(saved.get("payload_kg", start_payload_kg)), PAYLOAD_RANGE.x, PAYLOAD_RANGE.y)
+	var saved_stages: Variant = saved.get("stages", [])
+	if typeof(saved_stages) != TYPE_ARRAY or saved_stages.size() != start_stages.size():
+		return
+	for i in start_stages.size():
+		var stage: Dictionary = saved_stages[i]
+		if not engines.has(str(stage.get("engine_id", ""))):
+			continue
+		start_stages[i] = {
+			"engine": str(stage["engine_id"]),
+			"propellant": clampf(float(stage["propellant_kg"]), PROPELLANT_RANGE.x, PROPELLANT_RANGE.y),
+			"thrust": clampf(float(stage["thrust_kn"]), THRUST_RANGE.x, THRUST_RANGE.y),
+			"durability": clampf(float(stage["durability"]), 0.0, 1.0),
+		}
 
 
 func _build_ui() -> void:
@@ -74,10 +103,24 @@ func _build_ui() -> void:
 	mission_button.pressed.connect(func() -> void: get_tree().change_scene_to_file("res://mission.tscn"))
 	box.add_child(mission_button)
 	_add_heading(box, "Ship design (prototype step 5)")
-	payload_ctl = _add_slider(box, "Payload", PAYLOAD_RANGE, true, DEFAULT_PAYLOAD_KG, "kg")
+	var name_row := HBoxContainer.new()
+	box.add_child(name_row)
+	var name_label := Label.new()
+	name_label.text = "Ship name"
+	name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	name_row.add_child(name_label)
+	var name_edit := LineEdit.new()
+	name_edit.text = ship_name
+	name_edit.custom_minimum_size = Vector2(260, 0)
+	name_edit.max_length = 40
+	name_edit.text_changed.connect(func(text: String) -> void:
+		ship_name = text
+		_refresh())
+	name_row.add_child(name_edit)
+	payload_ctl = _add_slider(box, "Payload", PAYLOAD_RANGE, true, start_payload_kg, "kg")
 
-	for i in DEFAULT_STAGES.size():
-		var defaults: Dictionary = DEFAULT_STAGES[i]
+	for i in start_stages.size():
+		var defaults: Dictionary = start_stages[i]
 		_add_heading(box, "Stage %d%s" % [i + 1, " (fires first)" if i == 0 else ""])
 		var picker := OptionButton.new()
 		picker.custom_minimum_size = Vector2(0, 40)
@@ -247,6 +290,7 @@ func _save_design(stages: Array, payload_kg: float, analysis: Dictionary) -> voi
 	if file == null:
 		return
 	file.store_string(JSON.stringify({
+		"name": ship_name.strip_edges() if ship_name.strip_edges() != "" else "Unnamed ship",
 		"payload_kg": payload_kg,
 		"stages": stages,
 		"total_dv_ms": analysis["total_dv_ms"],

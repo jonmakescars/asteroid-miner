@@ -8,7 +8,9 @@ const DATA_PATH := "res://data/bodies.json"
 const DESIGN_PATH := "user://ship_design.json"  # written by the ship design screen
 const DEFAULT_SHIP_DV_KMS := 10.0
 const PARKING_ALTITUDE_KM := 400.0
-const WARP_STEPS := [0.01, 0.1, 1.0, 10.0, 100.0, 1000.0]  # game days per real second
+const WARP_STEPS := [1.0 / 86400.0, 1.0 / 1440.0, 1.0 / 24.0, 1.0, 10.0, 100.0, 1000.0]  # game days per real second
+const WARP_LABELS := ["real time", "1 min/s", "1 h/s", "1 day/s", "10 days/s", "100 days/s", "1000 days/s"]
+const SKIP_LEAD_DAYS := 120.0 / 86400.0  # "skip to departure" stops two minutes before the burn
 const MIN_BODY_RADIUS_PX := 3.0
 const RING_RADIUS_PX := 10.0
 const ORBIT_SAMPLES := 160
@@ -23,11 +25,12 @@ var bodies: Dictionary = {}
 var children: Dictionary = {}
 var start_jd := 0.0
 var time_jd := 0.0
-var warp_index := 2
-var paused := false
+var warp_index := 0
+var paused := true
 var frame_index := 0
 var ship_dv_kms := DEFAULT_SHIP_DV_KMS
 var ship_dv_source := "default value; design a ship on the ship design screen"
+var ship_name := "Ship"
 var parking_segment: Dictionary = {}
 var legs: Array = []     # the ship's orbit legs: {parent, segment, t_start, label}
 var plan: Dictionary = {}
@@ -71,10 +74,13 @@ func _load_ship_dv() -> void:
 	if typeof(parsed) == TYPE_DICTIONARY and parsed.has("total_dv_ms"):
 		ship_dv_kms = float(parsed["total_dv_ms"]) / 1000.0
 		ship_dv_source = "from the ship design screen"
+		ship_name = str(parsed.get("name", ship_name))
 
 
 func _reset() -> void:
 	time_jd = start_jd
+	paused = true
+	warp_index = 0
 	plan = {}
 	message = ""
 	var earth_gm := float(bodies["earth"]["gm_km3_s2"])
@@ -101,7 +107,7 @@ func _build_ui() -> void:
 	row1.add_child(target_picker)
 	plan_button = _add_button(row1, "Plan", _on_plan)
 	launch_button = _add_button(row1, "Launch", _on_launch)
-	skip_button = _add_button(row1, "Skip to departure", _on_skip)
+	skip_button = _add_button(row1, "Launch + skip to departure", _on_skip)
 	_add_button(row1, "Reset", _reset)
 
 	var row2 := HFlowContainer.new()
@@ -138,6 +144,7 @@ func _on_plan() -> void:
 	var target: Dictionary = TARGETS[target_picker.selected]
 	legs = [legs[0]]
 	plan = _make_plan(target)
+	paused = true
 	message = "" if not plan.is_empty() else "No launch window found within the search period."
 
 
@@ -154,9 +161,13 @@ func _on_launch() -> void:
 	]
 
 
+## Launches (commits the plan) and jumps to just before the departure burn. Time stays as it was (paused or not).
 func _on_skip() -> void:
-	if not plan.is_empty():
-		time_jd = maxf(time_jd, float(plan["t_dep"]) - 0.02)
+	if plan.is_empty():
+		return
+	if not plan["committed"]:
+		_on_launch()
+	time_jd = maxf(time_jd, float(plan["t_dep"]) - SKIP_LEAD_DAYS)
 
 
 func _departed() -> bool:
@@ -210,6 +221,7 @@ func _make_plan(target: Dictionary) -> Dictionary:
 		"transfer_segment": TransferPlanner.transfer_segment(transfer, gm),
 		"capture_segment": TransferPlanner.circular_segment(capture_radius, target_gm, float(transfer["t_arr"]), 0.0),
 		"committed": false,
+		"arrival_seen": false,
 	}
 
 
@@ -266,6 +278,10 @@ func _frame_id() -> String:
 func _process(delta: float) -> void:
 	if not paused:
 		time_jd += delta * float(WARP_STEPS[warp_index])
+	# On arrival, drop back to the slowest time flow.
+	if not plan.is_empty() and plan["committed"] and not plan["arrival_seen"] and time_jd >= float(plan["t_arr"]):
+		plan["arrival_seen"] = true
+		warp_index = 0
 	_update_ui()
 	queue_redraw()
 
@@ -276,7 +292,7 @@ func _update_ui() -> void:
 	var affordable := not plan.is_empty() and _plan_dv_total() <= ship_dv_kms
 	var window_open := not plan.is_empty() and time_jd < float(plan["t_dep"]) - 0.0001
 	launch_button.disabled = plan.is_empty() or plan["committed"] or not affordable or not window_open
-	skip_button.disabled = plan.is_empty() or not window_open
+	skip_button.disabled = plan.is_empty() or not window_open or not affordable
 	pause_button.text = "Resume" if paused else "Pause"
 	frame_button.text = "View: " + str(FRAMES[frame_index])
 	info_label.text = _info_text()
@@ -304,10 +320,10 @@ func _dv_left() -> float:
 
 func _info_text() -> String:
 	var lines: PackedStringArray = []
-	var warp_text := "paused" if paused else "%s days/s" % str(WARP_STEPS[warp_index])
+	var warp_text := "paused (%s)" % WARP_LABELS[warp_index] if paused else str(WARP_LABELS[warp_index])
 	lines.append("%s | warp %s" % [_date_text(time_jd), warp_text])
-	lines.append("Ship: %s | delta-v left %.2f km/s (%s)" % [
-			legs[_leg_index_at(time_jd)]["label"], _dv_left(), ship_dv_source])
+	lines.append("%s: %s | delta-v left %.2f km/s (%s)" % [
+			ship_name, legs[_leg_index_at(time_jd)]["label"], _dv_left(), ship_dv_source])
 	if plan.is_empty():
 		lines.append(message if message != "" else "Choose a destination and press Plan to find the next launch window.")
 		return "\n".join(lines)
@@ -322,7 +338,7 @@ func _info_text() -> String:
 	elif time_jd >= float(plan["t_dep"]):
 		lines.append("The launch window has passed. Press Plan again.")
 	else:
-		lines.append("Ready: press Launch, then run time or press Skip to departure.")
+		lines.append("Ready: press Launch and resume time, or press Launch + skip to departure.")
 	return "\n".join(lines)
 
 
@@ -372,7 +388,7 @@ func _draw() -> void:
 	var ship_local := _ship_abs(time_jd) - _body_abs(frame_id, time_jd)
 	var p := _to_screen(ship_local, centre, px_per_km)
 	draw_colored_polygon(PackedVector2Array([p + Vector2(0, -7), p + Vector2(6, 5), p + Vector2(-6, 5)]), Color.WHITE)
-	draw_string(ThemeDB.fallback_font, p + Vector2(10, 22), "Ship", HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color.WHITE)
+	draw_string(ThemeDB.fallback_font, p + Vector2(10, 22), ship_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color.WHITE)
 
 
 func _to_screen(position_km: Vector2, centre: Vector2, px_per_km: float) -> Vector2:
