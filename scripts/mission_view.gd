@@ -37,6 +37,8 @@ var plan: Dictionary = {}
 var message := ""
 
 var info_label: Label
+var date_label: Label
+var status_label: Label
 var target_picker: OptionButton
 var plan_button: Button
 var launch_button: Button
@@ -140,22 +142,48 @@ func _build_ui() -> void:
 	row1.add_child(target_picker)
 	plan_button = _add_button(row1, "Plan", _on_plan)
 	launch_button = _add_button(row1, "Launch", _on_launch)
-	skip_button = _add_button(row1, "Launch + skip to departure", _on_skip)
+	skip_button = _add_button(row1, "Skip to Departure & Launch", _on_skip)
 	_add_button(row1, "Reset", _reset)
 
 	var row2 := HFlowContainer.new()
 	box.add_child(row2)
-	_add_button(row2, "Slower", func() -> void: warp_index = maxi(warp_index - 1, 0))
+	_add_button(row2, "Slower", func() -> void: _change_warp(-1))
 	pause_button = _add_button(row2, "Pause", func() -> void: paused = not paused)
-	_add_button(row2, "Faster", func() -> void: warp_index = mini(warp_index + 1, WARP_STEPS.size() - 1))
+	_add_button(row2, "Faster", func() -> void: _change_warp(1))
 	frame_button = _add_button(row2, "View", func() -> void: frame_index = (frame_index + 1) % FRAMES.size())
 	_add_button(row2, "Ship design", func() -> void: _goto("res://ship_design.tscn"))
 	_add_button(row2, "Menu", func() -> void: _goto("res://menu.tscn"))
+	box.move_child(row2, 0)  # time, view and menu controls first, mission planning below them
+
+	var time_row := HBoxContainer.new()
+	box.add_child(time_row)
+	date_label = Label.new()
+	time_row.add_child(date_label)
+	status_label = Label.new()
+	time_row.add_child(status_label)
 
 	info_label = Label.new()
 	info_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	info_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(info_label)
+
+
+## Slower or faster time flow. Going faster while paused also resumes time.
+func _change_warp(step: int) -> void:
+	warp_index = clampi(warp_index + step, 0, WARP_STEPS.size() - 1)
+	if step > 0:
+		paused = false
+
+
+## Tapping or clicking the bottom third of the screen changes the time flow, as in the solar system
+## view: left half = slower, right half = faster.
+func _gui_input(event: InputEvent) -> void:
+	var click := event as InputEventMouseButton
+	if click == null or not click.pressed or click.button_index != MOUSE_BUTTON_LEFT:
+		return
+	if click.position.y < size.y * 0.67:
+		return
+	_change_warp(-1 if click.position.x < size.x * 0.5 else 1)
 
 
 func _add_button(parent: Control, text: String, action: Callable) -> Button:
@@ -195,13 +223,15 @@ func _on_launch() -> void:
 	]
 
 
-## Launches (commits the plan) and jumps to just before the departure burn. Time stays as it was (paused or not).
+## Launches (commits the plan), jumps to just before the departure burn and resumes time in real time.
 func _on_skip() -> void:
 	if plan.is_empty():
 		return
 	if not plan["committed"]:
 		_on_launch()
 	time_jd = maxf(time_jd, float(plan["t_dep"]) - SKIP_LEAD_DAYS)
+	paused = false
+	warp_index = 0
 
 
 func _departed() -> bool:
@@ -329,6 +359,13 @@ func _update_ui() -> void:
 	skip_button.disabled = plan.is_empty() or not window_open or not affordable
 	pause_button.text = "Resume" if paused else "Pause"
 	frame_button.text = "View: " + str(FRAMES[frame_index])
+	date_label.text = _date_text(time_jd)
+	if paused:
+		status_label.text = "   Paused"
+		status_label.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3))
+	else:
+		status_label.remove_theme_color_override("font_color")
+		status_label.text = "" if warp_index == 0 else "   Warp: %s" % WARP_LABELS[warp_index]
 	info_label.text = _info_text()
 
 
@@ -354,8 +391,6 @@ func _dv_left() -> float:
 
 func _info_text() -> String:
 	var lines: PackedStringArray = []
-	var warp_text := "paused (%s)" % WARP_LABELS[warp_index] if paused else str(WARP_LABELS[warp_index])
-	lines.append("%s | warp %s" % [_date_text(time_jd), warp_text])
 	lines.append("%s: %s | delta-v left %.2f km/s (%s)" % [
 			ship_name, legs[_leg_index_at(time_jd)]["label"], _dv_left(), ship_dv_source])
 	if plan.is_empty():
@@ -372,7 +407,7 @@ func _info_text() -> String:
 	elif time_jd >= float(plan["t_dep"]):
 		lines.append("The launch window has passed. Press Plan again.")
 	else:
-		lines.append("Ready: press Launch and resume time, or press Launch + skip to departure.")
+		lines.append("Ready: press Launch and resume time, or press Skip to Departure & Launch.")
 	return "\n".join(lines)
 
 
