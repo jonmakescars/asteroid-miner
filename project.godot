@@ -9,6 +9,9 @@
 config_version=5
 
 [application]
+run/main_scene="res://main.tscn"
+run/main_scene="res://main.tscn"
+run/main_scene="res://main.tscn"
 
 config/name="Asteroid Miner"
 config/features=PackedStringArray("4.7", "Mobile")

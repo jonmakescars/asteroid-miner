@@ -1,0 +1,262 @@
+{
+  "format_version": 1,
+  "description": "Prototype bodies for the asteroid mining game. See DATA_NOTES.md for sources, derivations and simplifications.",
+  "units": {
+    "distance": "km",
+    "time": "days (Julian Date)",
+    "angles": "degrees",
+    "gm": "km^3/s^2",
+    "mass": "kg",
+    "density": "kg/m^3"
+  },
+  "game_start": {
+    "date": "2035-01-01T00:00:00",
+    "jd": 2464328.5
+  },
+  "bodies": [
+    {
+      "id": "sun",
+      "name": "Sun",
+      "type": "star",
+      "parent": null,
+      "draw_color": "#FFD54A",
+      "gm_km3_s2": 132712440041.27942,
+      "mass_kg": 1.9884e+30,
+      "radius_km": 695700.0,
+      "atmosphere": null,
+      "resources": {},
+      "home": false,
+      "impact_thresholds": {
+        "safe_speed_km_s": null,
+        "facility_energy_limit_j": null,
+        "cataclysm_energy_limit_j": null
+      },
+      "orbit_segments": [],
+      "notes": ""
+    },
+    {
+      "id": "earth",
+      "name": "Earth",
+      "type": "planet",
+      "parent": "sun",
+      "draw_color": "#4A90D9",
+      "gm_km3_s2": 398600.435507,
+      "mass_kg": 5.9722e+24,
+      "radius_km": 6371.0,
+      "atmosphere": {
+        "surface_density_kg_m3": 1.217,
+        "scale_height_km": 8.5
+      },
+      "resources": {
+        "water": {
+          "quantity_kg": -1,
+          "availability": 1.0
+        }
+      },
+      "home": true,
+      "impact_thresholds": {
+        "safe_speed_km_s": null,
+        "facility_energy_limit_j": null,
+        "cataclysm_energy_limit_j": null
+      },
+      "orbit_segments": [
+        {
+          "epoch_jd": 2451545.0,
+          "reference_plane": "ecliptic_J2000",
+          "semi_major_axis_km": 149598261.1504425,
+          "eccentricity": 0.01671123,
+          "inclination_deg": -1.531e-05,
+          "longitude_of_ascending_node_deg": 0.0,
+          "argument_of_periapsis_deg": 102.93768193,
+          "mean_anomaly_deg": 357.52688973,
+          "mean_motion_deg_per_day": 0.985609102,
+          "mean_motion_source": "JPL Table 1 rate of mean longitude L (apsides held fixed)"
+        }
+      ],
+      "notes": "Orbit uses the Earth-Moon barycentre elements (JPL Table 1); the small offset between barycentre and Earth centre is ignored."
+    },
+    {
+      "id": "moon",
+      "name": "Moon",
+      "type": "moon",
+      "parent": "earth",
+      "draw_color": "#BDBDBD",
+      "gm_km3_s2": 4902.800118,
+      "mass_kg": 7.349e+22,
+      "radius_km": 1737.4,
+      "atmosphere": null,
+      "resources": {
+        "water": {
+          "quantity_kg": -1,
+          "availability": 0.15
+        }
+      },
+      "home": false,
+      "impact_thresholds": {
+        "safe_speed_km_s": null,
+        "facility_energy_limit_j": null,
+        "cataclysm_energy_limit_j": null
+      },
+      "orbit_segments": [
+        {
+          "epoch_jd": 2451545.0,
+          "reference_plane": "ecliptic_J2000",
+          "semi_major_axis_km": 384400.0,
+          "eccentricity": 0.0554,
+          "inclination_deg": 5.16,
+          "longitude_of_ascending_node_deg": 125.08,
+          "argument_of_periapsis_deg": 318.15,
+          "mean_anomaly_deg": 135.27,
+          "mean_motion_deg_per_day": 13.1761950077,
+          "mean_motion_source": "JPL satellite mean elements, period P = 27.322 d"
+        }
+      ],
+      "notes": "Resource list is a prototype proposal (polar ice)."
+    },
+    {
+      "id": "mars",
+      "name": "Mars",
+      "type": "planet",
+      "parent": "sun",
+      "draw_color": "#C1440E",
+      "gm_km3_s2": 42828.375816,
+      "mass_kg": 6.4169e+23,
+      "radius_km": 3389.5,
+      "atmosphere": {
+        "surface_density_kg_m3": 0.016,
+        "scale_height_km": 11.0
+      },
+      "resources": {
+        "water": {
+          "quantity_kg": -1,
+          "availability": 0.3
+        }
+      },
+      "home": false,
+      "impact_thresholds": {
+        "safe_speed_km_s": null,
+        "facility_energy_limit_j": null,
+        "cataclysm_energy_limit_j": null
+      },
+      "orbit_segments": [
+        {
+          "epoch_jd": 2451545.0,
+          "reference_plane": "ecliptic_J2000",
+          "semi_major_axis_km": 227943822.42757303,
+          "eccentricity": 0.0933941,
+          "inclination_deg": 1.84969142,
+          "longitude_of_ascending_node_deg": 49.55953891,
+          "argument_of_periapsis_deg": 286.4968315,
+          "mean_anomaly_deg": 19.39019754,
+          "mean_motion_deg_per_day": 0.5240329277,
+          "mean_motion_source": "JPL Table 1 rate of mean longitude L (apsides held fixed)"
+        }
+      ],
+      "notes": "GM is the Mars system value (planet plus Phobos and Deimos); the difference is negligible. Resource list is a prototype proposal."
+    },
+    {
+      "id": "phobos",
+      "name": "Phobos",
+      "type": "moon",
+      "parent": "mars",
+      "draw_color": "#8B7E74",
+      "gm_km3_s2": 0.0007087,
+      "mass_kg": 1.061834199841182e+16,
+      "radius_km": 11.08,
+      "atmosphere": null,
+      "resources": {},
+      "home": false,
+      "impact_thresholds": {
+        "safe_speed_km_s": null,
+        "facility_energy_limit_j": null,
+        "cataclysm_energy_limit_j": null
+      },
+      "orbit_segments": [
+        {
+          "epoch_jd": 2451545.0,
+          "reference_plane": "mars_laplace_plane",
+          "semi_major_axis_km": 9375.0,
+          "eccentricity": 0.015,
+          "inclination_deg": 1.1,
+          "longitude_of_ascending_node_deg": 169.2,
+          "argument_of_periapsis_deg": 216.3,
+          "mean_anomaly_deg": 189.7,
+          "mean_motion_deg_per_day": 1128.6135663468,
+          "mean_motion_source": "Kepler's third law from a and GM (Mars + moon)"
+        }
+      ],
+      "notes": "Mass derived from GM. Elements are mean elements relative to the local Laplace plane; JPL warns they are not for ephemeris use."
+    },
+    {
+      "id": "deimos",
+      "name": "Deimos",
+      "type": "moon",
+      "parent": "mars",
+      "draw_color": "#A69A8C",
+      "gm_km3_s2": 9.62e-05,
+      "mass_kg": 1441349654645431.0,
+      "radius_km": 6.2,
+      "atmosphere": null,
+      "resources": {},
+      "home": false,
+      "impact_thresholds": {
+        "safe_speed_km_s": null,
+        "facility_energy_limit_j": null,
+        "cataclysm_energy_limit_j": null
+      },
+      "orbit_segments": [
+        {
+          "epoch_jd": 2451545.0,
+          "reference_plane": "mars_laplace_plane",
+          "semi_major_axis_km": 23457.0,
+          "eccentricity": 0.0,
+          "inclination_deg": 1.8,
+          "longitude_of_ascending_node_deg": 54.3,
+          "argument_of_periapsis_deg": 0.0,
+          "mean_anomaly_deg": 205.0,
+          "mean_motion_deg_per_day": 285.1631976998,
+          "mean_motion_source": "Kepler's third law from a and GM (Mars + moon)"
+        }
+      ],
+      "notes": "Mass derived from GM. Elements are mean elements relative to the local Laplace plane; JPL warns they are not for ephemeris use."
+    },
+    {
+      "id": "ceres",
+      "name": "Ceres",
+      "type": "dwarf_planet",
+      "parent": "sun",
+      "draw_color": "#9C9C9C",
+      "gm_km3_s2": 62.63109725599999,
+      "mass_kg": 9.38392e+20,
+      "radius_km": 469.7,
+      "atmosphere": null,
+      "resources": {
+        "water": {
+          "quantity_kg": -1,
+          "availability": 0.4
+        }
+      },
+      "home": false,
+      "impact_thresholds": {
+        "safe_speed_km_s": null,
+        "facility_energy_limit_j": null,
+        "cataclysm_energy_limit_j": null
+      },
+      "orbit_segments": [
+        {
+          "epoch_jd": 2460200.5,
+          "reference_plane": "ecliptic_J2000",
+          "semi_major_axis_km": 413937308.2269,
+          "eccentricity": 0.0789,
+          "inclination_deg": 10.59,
+          "longitude_of_ascending_node_deg": 80.25,
+          "argument_of_periapsis_deg": 73.42,
+          "mean_anomaly_deg": 60.08,
+          "mean_motion_deg_per_day": 0.2141363202,
+          "mean_motion_source": "Kepler's third law from a and GM (Sun + Ceres)"
+        }
+      ],
+      "notes": "GM derived from mass. Orbital elements are rounded values from a secondary mirror of the JPL Small-Body Database; replace with exact SBDB values later. Resource list is a prototype proposal."
+    }
+  ]
+}

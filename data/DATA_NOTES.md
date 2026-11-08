@@ -1,0 +1,66 @@
+# Prototype body data: notes
+
+Files:
+
+- `data/bodies.json` – Sun, Earth, Moon, Mars, Phobos, Deimos and Ceres, following the data model in the design document.
+- `scripts/kepler.gd` – Kepler orbit maths (position of a body on rails at any date).
+- `scripts/system_view.gd` – a small test view that draws one system at a time and has time warp (build order step 4).
+
+## Using them in the Godot project
+
+1. Copy the three files into the project, keeping the folders (`res://data/`, `res://scripts/`).
+2. Create a new scene with a **Node2D** as root, attach `system_view.gd`, save it as `main.tscn` and set it as the main scene. Bodies are plain circles, so no graphics are needed.
+3. Run it. Tab (or a tap on the top half of the screen) switches between the Sun, Earth and Mars systems, Space pauses, and `+` / `-` (or a tap on the bottom right / left) change the time warp.
+4. **Android export:** Godot only packs `.json` files if told to. In Project, Export, Resources, add `*.json` to "Filters to export non-resource files/folders". Without it the phone build shows an empty screen and logs "Cannot read res://data/bodies.json".
+
+These scripts were not run in Godot (it is not available where they were written). The orbit maths was mirrored line by line in Python and checked (see below), but expect to fix a typo or two the first time you press Play. Send me the error text if so.
+
+## Units and conventions
+
+Kilometres, days (Julian Date), degrees, GM in km³/s², mass in kg. The game starts on 2035-01-01 00:00 (JD 2464328.5). Dates are treated as a plain continuous day count, with no leap-second or time-scale corrections.
+
+## Sources
+
+| Data | Source |
+| --- | --- |
+| Earth and Mars orbits | [JPL, Approximate Positions of the Planets](https://ssd.jpl.nasa.gov/planets/approx_pos.html), Table 1 (valid 1800–2050), base values at J2000 |
+| Moon, Phobos, Deimos orbits | [JPL, Planetary Satellite Mean Elements](https://ssd.jpl.nasa.gov/sats/elem/sep.html), epoch 2000-01-01.5 |
+| Ceres orbit | [Space Reference](https://spacereference.org/asteroid/1-ceres-a801-aa), which lists the JPL Small-Body Database elements for epoch JD 2460200.5 (rounded values) |
+| GM of Sun, Earth, Moon, Mars | [JPL, Astrodynamic Parameters](https://ssd.jpl.nasa.gov/astro_par.html) (DE440); astronomical unit 149 597 870.7 km |
+| Radius and GM of Moon, Phobos, Deimos | [JPL, Planetary Satellite Physical Parameters](https://ssd.jpl.nasa.gov/sats/phys_par) |
+| Mass, radius, atmosphere of Earth, Mars; Sun mass and radius | NASA fact sheets: [Earth](https://nssdc.gsfc.nasa.gov/planetary/factsheet/earthfact.html), [Mars](https://nssdc.gsfc.nasa.gov/planetary/factsheet/marsfact.html), [Sun](https://nssdc.gsfc.nasa.gov/planetary/factsheet/sunfact.html) |
+| Moon mass | NASA Moon fact sheet (archived copy) |
+| Ceres mass and radius | [Wikipedia, Ceres](https://en.wikipedia.org/wiki/Ceres_(dwarf_planet)) infobox (mass from Dawn) |
+
+## Derived values (computed, not copied)
+
+- **Earth and Mars elements:** semi-major axis = a (AU) × AU; argument of periapsis = long.peri. − long.node; mean anomaly = L − long.peri.; mean motion = rate of L ÷ 36525 (gives 365.256 d and 686.980 d, matching the NASA fact sheets).
+- **Phobos and Deimos mean motion:** Kepler's third law from a and GM (Mars + moon). Periods come out at 0.31898 d and 1.26243 d.
+- **Ceres mean motion and GM:** mean motion from Kepler's third law (period 1681 d); GM = mass × G (62.63 km³/s²).
+- **Phobos and Deimos mass:** GM ÷ G.
+- **Moon mean motion:** from JPL's period of 27.322 d. Kepler's law with the mean semi-major axis would give 27.285 d (the Sun perturbs the Moon's orbit), which would drift the phase noticeably over decades.
+
+## Simplifications to keep in mind
+
+- **2D map:** inclination is ignored. Each orbit is an ellipse in the map plane, rotated by the longitude of periapsis (node + argument of periapsis).
+- **Apsides held fixed:** only the mean anomaly advances over time. Against JPL's own formula with precession rates, the Earth ends up about 10 000 km off in 2035 and Mars about 77 000 km (about 0.0005 AU), which is invisible on a map and irrelevant to transfer planning.
+- **Earth** is placed on the Earth-Moon barycentre orbit from Table 1. The offset between the barycentre and Earth's centre is ignored.
+- **Mars GM** is the Mars system value, including Phobos and Deimos.
+- **Phobos and Deimos** use mean elements referred to Mars's local Laplace plane. JPL says these are not meant for ephemeris use, and in a 2D map their orientation angles only set the starting phase.
+- **Ceres elements** come from a secondary mirror and are rounded (a to 0.001 AU, angles to 0.01°). The error is small for a game, but the exact SBDB values should replace them when convenient.
+- **Orbit segments:** each body has a list. A later segment (for example after an impact) is added with its epoch set to the time of the change, and `Kepler.segment_at` picks the one that applies.
+
+## Proposals for you to review (not from sources)
+
+- **Resources:** each entry has `quantity_kg` (-1 = infinite) and `availability` (0 to 1, high = easy to extract). Availability sets the output per unit of time for given labour and equipment; cost differences only follow from needing more labour, equipment, life support or robots. Water (one id, `water`, for liquid and ice alike) is infinite on Earth (availability 1.0, already liquid), the Moon (0.15), Mars (0.3) and Ceres (0.4). The availability numbers are placeholders for balancing. Sun, Phobos and Deimos have none.
+- **Home flag:** Earth.
+- **Impact thresholds:** left as `null` until the impact system is built.
+- **Atmosphere:** only surface density and scale height are set (exponential model). The altitude where an atmosphere starts to matter is left to a game constant, so it can be tuned.
+- **Draw colours:** only used by the test view.
+
+## Checks performed
+
+- On 2035-01-01 Earth is at heliocentric longitude 99.9° and 0.9833 AU, as expected shortly before the early-January perihelion.
+- On 2035-09-15 Earth and Mars are at the same heliocentric longitude (351.5° and 351.8°), which fits the Mars opposition of mid-September 2035 (the date is from memory, not from a source). This checks both orbits and their mean motions together.
+- The mean motions from the table and from Kepler's third law agree to 4 × 10⁻⁶ (Earth) and 2 × 10⁻⁵ (Mars).
+- After exactly one period every orbit returns to its starting position to within 0.0002 km, so the Kepler solver converges.
