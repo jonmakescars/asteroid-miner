@@ -168,11 +168,19 @@ func _build_ui() -> void:
 	box.add_child(info_label)
 
 
-## Slower or faster time flow. Going faster while paused also resumes time.
+## Faster: if paused, resumes at the selected rate; otherwise steps up one rate.
+## Slower: if running at real time, pauses; otherwise steps down one rate (also while paused).
 func _change_warp(step: int) -> void:
-	warp_index = clampi(warp_index + step, 0, WARP_STEPS.size() - 1)
 	if step > 0:
-		paused = false
+		if paused:
+			paused = false
+		else:
+			warp_index = mini(warp_index + 1, WARP_STEPS.size() - 1)
+	else:
+		if not paused and warp_index == 0:
+			paused = true
+		else:
+			warp_index = maxi(warp_index - 1, 0)
 
 
 ## Tapping or clicking the bottom third of the screen changes the time flow, as in the solar system
