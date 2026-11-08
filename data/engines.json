@@ -1,0 +1,17 @@
+{
+  "format_version": 1,
+  "notes": "Game placeholder values for balancing, loosely based on real engine classes. Isp is vacuum specific impulse; thrust_to_weight is engine thrust divided by engine weight at Earth gravity.",
+  "design_rules": {
+    "tank_structure_fraction_base": 0.06,
+    "tank_structure_fraction_per_durability": 0.08,
+    "min_stage_propellant_kg": 100.0,
+    "warn_start_accel_below_ms2": 0.5,
+    "warn_start_accel_above_g": 4.0
+  },
+  "engines": [
+    { "id": "kerolox",   "name": "Kerosene / oxygen",     "isp_vac_s": 340.0, "thrust_to_weight": 70.0 },
+    { "id": "hydrolox",  "name": "Hydrogen / oxygen",     "isp_vac_s": 450.0, "thrust_to_weight": 40.0 },
+    { "id": "methalox",  "name": "Methane / oxygen",      "isp_vac_s": 360.0, "thrust_to_weight": 80.0 },
+    { "id": "storable",  "name": "Storable (hypergolic)", "isp_vac_s": 320.0, "thrust_to_weight": 60.0 }
+  ]
+}
