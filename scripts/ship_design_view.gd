@@ -289,15 +289,29 @@ func _input(event: InputEvent) -> void:
 		focused.release_focus()
 
 
-## Saves the current design so that the mission planner can use its delta-v.
+## Saves the current design so that the mission planner can use it. Besides the delta-v it stores the
+## tank data of the equivalent single stage: total propellant, the average exhaust velocity weighted by
+## propellant mass, and the dry mass that gives the same total delta-v (rocket equation).
 func _save_design(stages: Array, payload_kg: float, analysis: Dictionary) -> void:
 	var file := FileAccess.open(DESIGN_PATH, FileAccess.WRITE)
 	if file == null:
 		return
+	var propellant_kg := 0.0
+	var momentum := 0.0
+	for stage in stages:
+		var stage_propellant := float(stage["propellant_kg"])
+		propellant_kg += stage_propellant
+		momentum += stage_propellant * float(engines[stage["engine_id"]]["isp_vac_s"]) * ShipCalc.G0
+	var ve_eff := momentum / propellant_kg
+	var total_dv_ms := float(analysis["total_dv_ms"])
+	var dry_eff := propellant_kg / maxf(exp(total_dv_ms / ve_eff) - 1.0, 0.000001)
 	file.store_string(JSON.stringify({
 		"name": ship_name.strip_edges() if ship_name.strip_edges() != "" else "Unnamed ship",
 		"payload_kg": payload_kg,
 		"stages": stages,
-		"total_dv_ms": analysis["total_dv_ms"],
+		"total_dv_ms": total_dv_ms,
 		"total_mass_kg": analysis["total_mass_kg"],
+		"propellant_kg": propellant_kg,
+		"ve_eff_ms": ve_eff,
+		"dry_eff_kg": dry_eff,
 	}, "\t"))

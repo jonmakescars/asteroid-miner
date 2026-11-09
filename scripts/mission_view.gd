@@ -1,186 +1,95 @@
 extends Control
-## Prototype build step 6: plan and fly an Earth-to-Moon or Earth-to-Mars mission on rails.
-## The ship starts in a circular parking orbit around Earth. "Plan" finds the next launch window and
-## the delta-v of the departure and capture burns. "Launch" commits the plan; then run time forward
-## (or use "Skip to departure") and watch the ship follow its orbit segments.
+## Mission planner: plan and fly a mission on rails from the body the ship is orbiting to any
+## destination the planner offers (see MissionPlanner). "Plan" finds the next launch window and the
+## burns; "Launch" commits the plan; then run time forward (or use "Skip to Departure") and watch the
+## ship follow its orbit legs. The ship stays where it arrives; at a body with a propellant plant it can refuel.
 
-const DATA_PATH := "res://data/bodies.json"
-const DESIGN_PATH := "user://ship_design.json"  # written by the ship design screen
-const DEFAULT_SHIP_DV_KMS := 10.0
-const PARKING_ALTITUDE_KM := 400.0
-const WARP_STEPS := [1.0 / 86400.0, 1.0 / 1440.0, 1.0 / 24.0, 1.0, 10.0, 100.0, 1000.0]  # game days per real second
-const WARP_LABELS := ["real time", "1 min/s", "1 h/s", "1 day/s", "10 days/s", "100 days/s", "1000 days/s"]
 const SKIP_LEAD_DAYS := 120.0 / 86400.0  # "skip to departure" stops two minutes before the burn
 const MIN_BODY_RADIUS_PX := 3.0
 const RING_RADIUS_PX := 10.0
 const ORBIT_SAMPLES := 160
 const MOBILE_UI_SCALE := 2.0
-const FRAMES := ["auto", "sun", "earth", "mars", "moon"]
-const TARGETS := [
-	{"id": "moon", "name": "Moon", "frame": "earth", "capture_altitude_km": 100.0},
-	{"id": "mars", "name": "Mars", "frame": "sun", "capture_altitude_km": 400.0},
-]
 
-var bodies: Dictionary = {}
-var children: Dictionary = {}
-var start_jd := 0.0
-var time_jd := 0.0
-var warp_index := 0
-var paused := true
+# The game state is shared between screens (see GameState); these properties are shortcuts to it.
+var bodies: Dictionary:
+	get: return GameState.bodies
+var children: Dictionary:
+	get: return GameState.children
+var time_jd: float:
+	get: return GameState.time_jd
+	set(value): GameState.time_jd = value
+var paused: bool:
+	get: return GameState.paused
+	set(value): GameState.paused = value
+var warp_index: int:
+	get: return GameState.warp_index
+	set(value): GameState.warp_index = value
+var legs: Array:
+	get: return GameState.legs
+	set(value): GameState.legs = value
+var plan: Dictionary:
+	get: return GameState.plan
+	set(value): GameState.plan = value
+var message: String:
+	get: return GameState.message
+	set(value): GameState.message = value
+
+var frames: Array = []          # "auto" plus every body id
 var frame_index := 0
-var ship_dv_kms := DEFAULT_SHIP_DV_KMS
-var ship_dv_source := "default value; design a ship on the ship design screen"
-var ship_name := "Ship"
-var parking_segment: Dictionary = {}
-var legs: Array = []     # the ship's orbit legs: {parent, segment, t_start, label}
-var plan: Dictionary = {}
-var message := ""
+var destination_ids: Array = []  # what the destination picker currently offers
+var picker_origin := ""         # the body the picker was filled for
 
+var bar: TopBar
 var info_label: Label
-var date_label: Label
-var status_label: Label
 var target_picker: OptionButton
 var plan_button: Button
 var launch_button: Button
 var skip_button: Button
-var pause_button: Button
-var frame_button: Button
+var refuel_button: Button
 
 
 func _ready() -> void:
 	if OS.has_feature("mobile"):
 		get_window().content_scale_factor = MOBILE_UI_SCALE
 	RenderingServer.set_default_clear_color(Color(0.02, 0.02, 0.05))
-	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(DATA_PATH))
-	if typeof(parsed) != TYPE_DICTIONARY:
-		push_error("Cannot read %s (on Android, add *.json to the export filter)." % DATA_PATH)
+	if not GameState.load_data():
 		set_process(false)
 		return
-	start_jd = float(parsed["game_start"]["jd"])
-	for body in parsed["bodies"]:
-		bodies[body["id"]] = body
-		children[body["id"]] = []
-	for id in bodies:
-		var parent_id: Variant = bodies[id]["parent"]
-		if parent_id != null:
-			children[parent_id].append(id)
-	_load_ship_dv()
+	frames = ["auto"] + GameState.bodies.keys()
+	frame_index = GameState.mission_frame_index
 	_build_ui()
-	if GameState.has_mission_state:
-		_restore_state()
-	else:
-		_reset()
-
-
-func _load_ship_dv() -> void:
-	if not FileAccess.file_exists(DESIGN_PATH):
-		return
-	var parsed: Variant = JSON.parse_string(FileAccess.get_file_as_string(DESIGN_PATH))
-	if typeof(parsed) == TYPE_DICTIONARY and parsed.has("total_dv_ms"):
-		ship_dv_kms = float(parsed["total_dv_ms"]) / 1000.0
-		ship_dv_source = "from the ship design screen"
-		ship_name = str(parsed.get("name", ship_name))
-
-
-func _reset() -> void:
-	time_jd = start_jd
-	paused = true
-	warp_index = 0
-	plan = {}
-	message = ""
-	var earth_gm := float(bodies["earth"]["gm_km3_s2"])
-	var radius := float(bodies["earth"]["radius_km"]) + PARKING_ALTITUDE_KM
-	parking_segment = TransferPlanner.circular_segment(radius, earth_gm, start_jd, 0.0)
-	legs = [{"parent": "earth", "segment": parking_segment, "t_start": start_jd, "label": "Parking orbit around Earth"}]
-
-
-## Keeps the mission while another screen is open (see GameState).
-func _save_state() -> void:
-	GameState.has_mission_state = true
-	GameState.time_jd = time_jd
-	GameState.paused = paused
-	GameState.warp_index = warp_index
-	GameState.frame_index = frame_index
-	GameState.target_index = target_picker.selected
-	GameState.message = message
-	GameState.plan = plan
-	GameState.legs = legs
-
-
-func _restore_state() -> void:
-	time_jd = GameState.time_jd
-	paused = GameState.paused
-	warp_index = GameState.warp_index
-	frame_index = GameState.frame_index
-	message = GameState.message
-	plan = GameState.plan
-	legs = GameState.legs
-	parking_segment = legs[0]["segment"]
-	target_picker.select(GameState.target_index)
+	_fill_destinations(GameState.mission_target_id)
 
 
 func _goto(scene_path: String) -> void:
-	_save_state()
+	GameState.mission_frame_index = frame_index
+	GameState.mission_target_id = _selected_target_id()
 	get_tree().change_scene_to_file(scene_path)
 
 
 # ---------------------------------------------------------------- user interface
 
 func _build_ui() -> void:
-	var hud := PanelContainer.new()
-	hud.set_anchors_preset(Control.PRESET_TOP_WIDE)
-	add_child(hud)
-	var box := VBoxContainer.new()
-	hud.add_child(box)
+	bar = TopBar.new()
+	bar.setup("res://mission.tscn", "View: auto")
+	bar.view_pressed.connect(func() -> void: frame_index = (frame_index + 1) % frames.size())
+	bar.navigate.connect(_goto)
+	add_child(bar)
 
-	var row1 := HFlowContainer.new()
-	box.add_child(row1)
+	var row := bar.add_row()
 	target_picker = OptionButton.new()
-	for target in TARGETS:
-		target_picker.add_item("To " + str(target["name"]))
 	target_picker.item_selected.connect(func(_i: int) -> void: _on_target_changed())
-	row1.add_child(target_picker)
-	plan_button = _add_button(row1, "Plan", _on_plan)
-	launch_button = _add_button(row1, "Launch", _on_launch)
-	skip_button = _add_button(row1, "Skip to Departure & Launch", _on_skip)
-	_add_button(row1, "Reset", _reset)
-
-	var row2 := HFlowContainer.new()
-	box.add_child(row2)
-	_add_button(row2, "Slower", func() -> void: _change_warp(-1))
-	pause_button = _add_button(row2, "Pause", func() -> void: paused = not paused)
-	_add_button(row2, "Faster", func() -> void: _change_warp(1))
-	frame_button = _add_button(row2, "View", func() -> void: frame_index = (frame_index + 1) % FRAMES.size())
-	_add_button(row2, "Ship design", func() -> void: _goto("res://ship_design.tscn"))
-	_add_button(row2, "Menu", func() -> void: _goto("res://menu.tscn"))
-	box.move_child(row2, 0)  # time, view and menu controls first, mission planning below them
-
-	var time_row := HBoxContainer.new()
-	box.add_child(time_row)
-	date_label = Label.new()
-	time_row.add_child(date_label)
-	status_label = Label.new()
-	time_row.add_child(status_label)
+	row.add_child(target_picker)
+	plan_button = _add_button(row, "Plan", _on_plan)
+	launch_button = _add_button(row, "Launch", _on_launch)
+	skip_button = _add_button(row, "Skip to Departure & Launch", _on_skip)
+	refuel_button = _add_button(row, "Refuel", _on_refuel)
+	_add_button(row, "Reset", _on_reset)
 
 	info_label = Label.new()
 	info_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	info_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	box.add_child(info_label)
-
-
-## Faster: if paused, resumes at the selected rate; otherwise steps up one rate.
-## Slower: if running at real time, pauses; otherwise steps down one rate (also while paused).
-func _change_warp(step: int) -> void:
-	if step > 0:
-		if paused:
-			paused = false
-		else:
-			warp_index = mini(warp_index + 1, WARP_STEPS.size() - 1)
-	else:
-		if not paused and warp_index == 0:
-			paused = true
-		else:
-			warp_index = maxi(warp_index - 1, 0)
+	bar.box.add_child(info_label)
 
 
 ## Tapping or clicking the bottom third of the screen changes the time flow, as in the solar system
@@ -191,7 +100,7 @@ func _gui_input(event: InputEvent) -> void:
 		return
 	if click.position.y < size.y * 0.67:
 		return
-	_change_warp(-1 if click.position.x < size.x * 0.5 else 1)
+	GameState.change_warp(-1 if click.position.x < size.x * 0.5 else 1)
 
 
 func _add_button(parent: Control, text: String, action: Callable) -> Button:
@@ -203,19 +112,53 @@ func _add_button(parent: Control, text: String, action: Callable) -> Button:
 	return button
 
 
+## The body the ship is in orbit around, or "" while it is on a transfer.
+func _ship_body() -> String:
+	var leg := GameState.parked_leg()
+	return "" if leg.is_empty() else str(leg["parent"])
+
+
+func _selected_target_id() -> String:
+	if target_picker.selected < 0 or target_picker.selected >= destination_ids.size():
+		return ""
+	return destination_ids[target_picker.selected]
+
+
+## Fills the destination picker for the body the ship is at; keeps the previous choice if still offered.
+func _fill_destinations(keep_id: String) -> void:
+	picker_origin = _ship_body()
+	target_picker.clear()
+	destination_ids = []
+	if picker_origin == "":
+		return
+	destination_ids = MissionPlanner.destinations(picker_origin)
+	for id in destination_ids:
+		target_picker.add_item("To " + str(bodies[id]["name"]))
+	var index := destination_ids.find(keep_id)
+	target_picker.select(maxi(index, 0))
+
+
 func _on_target_changed() -> void:
-	if not _departed():
-		plan = {}
-		legs = [legs[0]]
-		message = ""
+	if GameState.ship_in_transit():
+		return
+	legs = [GameState.parked_leg()]
+	plan = {}
+	message = ""
 
 
 func _on_plan() -> void:
-	var target: Dictionary = TARGETS[target_picker.selected]
-	legs = [legs[0]]
-	plan = _make_plan(target)
+	var parked := GameState.parked_leg()
+	if parked.is_empty():
+		return
+	legs = [parked]
+	var result := MissionPlanner.make_plan(str(parked["parent"]), parked["segment"], _selected_target_id(), time_jd)
 	paused = true
-	message = "" if not plan.is_empty() else "No launch window found within the search period."
+	if result.has("error"):
+		plan = {}
+		message = str(result["error"])
+	else:
+		plan = result
+		message = ""
 
 
 func _on_launch() -> void:
@@ -225,13 +168,14 @@ func _on_launch() -> void:
 	legs = [
 		legs[0],
 		{"parent": plan["frame"], "segment": plan["transfer_segment"], "t_start": plan["t_dep"],
-				"label": "Transfer orbit to %s" % plan["target_name"]},
+				"label": "Transfer orbit to %s" % plan["target_name"], "kind": "transfer"},
 		{"parent": plan["target_id"], "segment": plan["capture_segment"], "t_start": plan["t_arr"],
-				"label": "Orbit around %s" % plan["target_name"]},
+				"label": "Orbit around %s" % plan["target_name"], "kind": "orbit"},
 	]
 
 
-## Launches (commits the plan), jumps to just before the departure burn and resumes time in real time.
+## Launches (commits the plan) if that has not happened yet, jumps to just before the departure burn
+## and resumes time in real time.
 func _on_skip() -> void:
 	if plan.is_empty():
 		return
@@ -242,143 +186,80 @@ func _on_skip() -> void:
 	warp_index = 0
 
 
-func _departed() -> bool:
-	return not plan.is_empty() and plan.get("committed", false) and time_jd >= float(plan["t_dep"])
+func _on_refuel() -> void:
+	var amount := GameState.refuel()
+	message = "Refuelled %s kg." % _kg_text(amount) if amount > 0.0 else "Nothing to refuel."
 
 
-# ---------------------------------------------------------------- planning
+func _on_reset() -> void:
+	GameState.reset_mission()
+	_fill_destinations("moon")
 
-## Finds the next launch window to the target and the burns it needs. Returns {} if there is none.
-func _make_plan(target: Dictionary) -> Dictionary:
-	var target_id: String = target["id"]
-	var frame: String = target["frame"]
-	var gm := float(bodies[frame]["gm_km3_s2"])
-	var earth_gm := float(bodies["earth"]["gm_km3_s2"])
-	var parking := parking_segment
-	var parking_radius := float(parking["semi_major_axis_km"])
-	var target_fn := func(t: float) -> Vector2: return _body_rel(target_id, t)
-	var origin_fn: Callable
-	var horizon := 0.3   # days to search; a parking orbit passes every spot within 0.07 days
-	var step := 0.002
-	if frame == "earth":
-		origin_fn = func(t: float) -> Vector2: return Kepler.position_at(parking, t)
-	else:
-		origin_fn = func(t: float) -> Vector2: return _body_rel("earth", t)
-		horizon = 900.0  # longer than the synodic period of Earth and Mars (about 780 days)
-		step = 1.0
 
-	var transfer := TransferPlanner.find_window(gm, origin_fn, target_fn, time_jd, horizon, step)
-	if transfer.is_empty():
-		return {}
-	var t_dep := float(transfer["t_dep"])
-	var dv_departure := 0.0
-	if frame == "earth":
-		dv_departure = TransferPlanner.departure_dv_bound(transfer, gm)
-	else:
-		var origin_velocity := TransferPlanner.velocity_kms(origin_fn, t_dep)
-		dv_departure = TransferPlanner.departure_dv_escape(transfer, origin_velocity, earth_gm, parking_radius)
-	var capture_radius := float(bodies[target_id]["radius_km"]) + float(target["capture_altitude_km"])
-	var target_gm := float(bodies[target_id]["gm_km3_s2"])
-	var arrival := TransferPlanner.arrival_dv(transfer, target_fn, target_gm, capture_radius)
-	return {
-		"target_id": target_id,
-		"target_name": target["name"],
-		"frame": frame,
-		"t_dep": t_dep,
-		"t_arr": float(transfer["t_arr"]),
-		"flight_days": float(transfer["flight_days"]),
-		"dv_departure": dv_departure,
-		"dv_arrival": float(arrival["dv_kms"]),
-		"v_inf_arrival": float(arrival["v_inf_kms"]),
-		"transfer_segment": TransferPlanner.transfer_segment(transfer, gm),
-		"capture_segment": TransferPlanner.circular_segment(capture_radius, target_gm, float(transfer["t_arr"]), 0.0),
-		"committed": false,
-		"arrival_seen": false,
-	}
+# ---------------------------------------------------------------- state helpers
+
+## True from the departure burn until the arrival burn.
+func _in_transit() -> bool:
+	return GameState.ship_in_transit()
 
 
 func _plan_dv_total() -> float:
 	return float(plan["dv_departure"]) + float(plan["dv_arrival"])
 
 
-# ---------------------------------------------------------------- positions on rails
-
-## Position (km) of a body relative to its parent.
 func _body_rel(id: String, jd: float) -> Vector2:
-	var segments: Array = bodies[id]["orbit_segments"]
-	if segments.is_empty():
-		return Vector2.ZERO
-	return Kepler.position_at(Kepler.segment_at(segments, jd), jd)
+	return GameState.body_rel(id, jd)
 
 
-## Position (km) of a body relative to the Sun.
 func _body_abs(id: String, jd: float) -> Vector2:
-	var total := Vector2.ZERO
-	var current: Variant = id
-	while current != null:
-		total += _body_rel(str(current), jd)
-		current = bodies[str(current)]["parent"]
-	return total
+	return GameState.body_abs(id, jd)
 
 
 func _leg_index_at(jd: float) -> int:
-	var chosen := 0
-	for i in legs.size():
-		if float(legs[i]["t_start"]) <= jd:
-			chosen = i
-	return chosen
+	return GameState.leg_index_at(jd)
 
 
 func _ship_abs(jd: float) -> Vector2:
-	var leg: Dictionary = legs[_leg_index_at(jd)]
-	return _body_abs(str(leg["parent"]), jd) + Kepler.position_at(leg["segment"], jd)
+	return GameState.ship_abs(jd)
 
 
 func _frame_id() -> String:
-	var choice: String = FRAMES[frame_index]
+	var choice: String = frames[frame_index]
 	if choice != "auto":
 		return choice
 	var index := _leg_index_at(time_jd)
-	# While waiting for a window to Mars, watch the planets rather than the parking orbit.
-	if index == 0 and not plan.is_empty() and plan["frame"] == "sun":
-		return "sun"
-	return str(legs[index]["parent"])
+	var parent_id := str(legs[index]["parent"])
+	# Before departure show the system the transfer happens in (for example the Sun for a planet transfer).
+	if index == 0 and not plan.is_empty() and plan["frame"] != parent_id:
+		return str(plan["frame"])
+	return parent_id
 
 
-# ---------------------------------------------------------------- time
+# ---------------------------------------------------------------- time and text
 
 func _process(delta: float) -> void:
-	if not paused:
-		time_jd += delta * float(WARP_STEPS[warp_index])
-	# On arrival, drop back to the slowest time flow.
-	if not plan.is_empty() and plan["committed"] and not plan["arrival_seen"] and time_jd >= float(plan["t_arr"]):
-		plan["arrival_seen"] = true
-		warp_index = 0
+	GameState.advance(delta)
+	if picker_origin != _ship_body():
+		_fill_destinations(_selected_target_id())
 	_update_ui()
 	queue_redraw()
 
 
 func _update_ui() -> void:
-	var departed := _departed()
-	plan_button.disabled = departed
-	var affordable := not plan.is_empty() and _plan_dv_total() <= ship_dv_kms
+	var in_transit := _in_transit()
+	plan_button.disabled = in_transit or destination_ids.is_empty()
+	target_picker.disabled = in_transit
+	var affordable := not plan.is_empty() and _plan_dv_total() <= GameState.dv_left_kms() + 0.00001
 	var window_open := not plan.is_empty() and time_jd < float(plan["t_dep"]) - 0.0001
 	launch_button.disabled = plan.is_empty() or plan["committed"] or not affordable or not window_open
 	skip_button.disabled = plan.is_empty() or not window_open or not affordable
-	pause_button.text = "Resume" if paused else "Pause"
-	frame_button.text = "View: " + str(FRAMES[frame_index])
-	date_label.text = _date_text(time_jd)
-	if paused:
-		status_label.text = "   Paused"
-		status_label.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3))
-	else:
-		status_label.remove_theme_color_override("font_color")
-		status_label.text = "" if warp_index == 0 else "   Warp: %s" % WARP_LABELS[warp_index]
+	skip_button.text = "Skip to Departure" if not plan.is_empty() and plan["committed"] else "Skip to Departure & Launch"
+	var facility: Dictionary = GameState.facility_at(_ship_body()) if _ship_body() != "" else {}
+	refuel_button.disabled = facility.is_empty() or float(facility.get("stock_kg", 0.0)) <= 0.0 \
+			or GameState.ship_fuel_kg >= GameState.ship_fuel_capacity_kg - 0.001
+	bar.set_view_text("View: " + str(frames[frame_index]))
+	bar.refresh()
 	info_label.text = _info_text()
-
-
-func _date_text(jd: float) -> String:
-	return Time.get_datetime_string_from_unix_time(int((jd - 2440587.5) * 86400.0)).replace("T", " ")
 
 
 func _span_text(days: float) -> String:
@@ -387,29 +268,48 @@ func _span_text(days: float) -> String:
 	return "%.1f days" % days
 
 
-func _dv_left() -> float:
-	var left := ship_dv_kms
-	if not plan.is_empty() and plan["committed"]:
-		if time_jd >= float(plan["t_dep"]):
-			left -= float(plan["dv_departure"])
-		if time_jd >= float(plan["t_arr"]):
-			left -= float(plan["dv_arrival"])
-	return left
+## A mass with thousands separators, for example 120,000.
+func _kg_text(kg: float) -> String:
+	var digits := str(int(round(kg)))
+	var out := ""
+	for i in digits.length():
+		if i > 0 and (digits.length() - i) % 3 == 0:
+			out += ","
+		out += digits[i]
+	return out
+
+
+func _fuel_text() -> String:
+	return "%s kg (%.2f km/s) of %s kg (%.2f km/s)" % [
+			_kg_text(GameState.ship_fuel_kg), GameState.dv_left_kms(),
+			_kg_text(GameState.ship_fuel_capacity_kg), GameState.ship_dv_kms]
 
 
 func _info_text() -> String:
 	var lines: PackedStringArray = []
-	lines.append("%s: %s | delta-v left %.2f km/s (%s)" % [
-			ship_name, legs[_leg_index_at(time_jd)]["label"], _dv_left(), ship_dv_source])
+	lines.append("%s: %s" % [GameState.ship_name, legs[_leg_index_at(time_jd)]["label"]])
+	lines.append("Fuel: %s" % _fuel_text())
+	for id in GameState.facilities:
+		var facility: Dictionary = GameState.facilities[id]
+		lines.append("%s: %s kg of %s kg (+%s kg/day)" % [facility["name"], _kg_text(float(facility["stock_kg"])),
+				_kg_text(float(facility["storage_capacity_kg"])), _kg_text(GameState.facility_output_per_day(facility))])
 	if plan.is_empty():
-		lines.append(message if message != "" else "Choose a destination and press Plan to find the next launch window.")
+		if message != "":
+			lines.append(message)
+		elif _in_transit():
+			lines.append("In transit.")
+		else:
+			lines.append("Choose a destination and press Plan to find the next launch window.")
 		return "\n".join(lines)
-	lines.append("Departure: %s (in %s)" % [_date_text(float(plan["t_dep"])), _span_text(float(plan["t_dep"]) - time_jd)])
-	lines.append("Arrival: %s (flight %s)" % [_date_text(float(plan["t_arr"])), _span_text(float(plan["flight_days"]))])
+	lines.append("Plan: %s to %s" % [bodies[plan["origin_id"]]["name"], plan["target_name"]])
+	lines.append("Departure: %s (in %s)" % [GameState.date_text(float(plan["t_dep"])), _span_text(float(plan["t_dep"]) - time_jd)])
+	lines.append("Arrival: %s (flight %s)" % [GameState.date_text(float(plan["t_arr"])), _span_text(float(plan["flight_days"]))])
 	lines.append("Burns: departure %.2f + capture %.2f = %.2f km/s" % [
 			float(plan["dv_departure"]), float(plan["dv_arrival"]), _plan_dv_total()])
-	if _plan_dv_total() > ship_dv_kms:
-		lines.append("Not enough delta-v for this mission. Build a stronger ship on the ship design screen.")
+	if message != "":
+		lines.append(message)
+	if not plan["committed"] and _plan_dv_total() > GameState.dv_left_kms():
+		lines.append("Not enough fuel for this mission. Refuel, or build a stronger ship on the ship design screen.")
 	elif plan["committed"]:
 		lines.append("Mission launched." if time_jd < float(plan["t_arr"]) else "Arrived at %s." % plan["target_name"])
 	elif time_jd >= float(plan["t_dep"]):
@@ -465,7 +365,7 @@ func _draw() -> void:
 	var ship_local := _ship_abs(time_jd) - _body_abs(frame_id, time_jd)
 	var p := _to_screen(ship_local, centre, px_per_km)
 	draw_colored_polygon(PackedVector2Array([p + Vector2(0, -7), p + Vector2(6, 5), p + Vector2(-6, 5)]), Color.WHITE)
-	draw_string(ThemeDB.fallback_font, p + Vector2(10, 22), ship_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color.WHITE)
+	draw_string(ThemeDB.fallback_font, p + Vector2(10, 22), GameState.ship_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color.WHITE)
 
 
 func _to_screen(position_km: Vector2, centre: Vector2, px_per_km: float) -> Vector2:
@@ -480,5 +380,7 @@ func _draw_body(id: String, screen_position: Vector2, px_per_km: float) -> void:
 	if radius_px < RING_RADIUS_PX:
 		draw_arc(screen_position, RING_RADIUS_PX, 0.0, TAU, 32, colour, 1.5, true)
 		radius_px = RING_RADIUS_PX
+	if not GameState.facility_at(id).is_empty():
+		draw_rect(Rect2(screen_position + Vector2(-radius_px - 9.0, -radius_px - 9.0), Vector2(7, 7)), Color(1.0, 0.6, 0.2))
 	draw_string(ThemeDB.fallback_font, screen_position + Vector2(radius_px + 4.0, 5.0), body["name"],
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(1, 1, 1, 0.8))

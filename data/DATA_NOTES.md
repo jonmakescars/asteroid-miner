@@ -3,6 +3,7 @@
 Files:
 
 - `data/bodies.json` – Sun, Earth, Moon, Mars, Phobos, Deimos and Ceres, following the data model in the design document.
+- `data/facilities.json` – the Ceres propellant plant (exists from the start in this prototype).
 - `scripts/kepler.gd` – Kepler orbit maths (position of a body on rails at any date).
 - `scripts/system_view.gd` – a small test view that draws one system at a time and has time warp (build order step 4).
 
@@ -64,3 +65,11 @@ Kilometres, days (Julian Date), degrees, GM in km³/s², mass in kg. The game st
 - On 2035-09-15 Earth and Mars are at the same heliocentric longitude (351.5° and 351.8°), which fits the Mars opposition of mid-September 2035 (the date is from memory, not from a source). This checks both orbits and their mean motions together.
 - The mean motions from the table and from Kepler's third law agree to 4 × 10⁻⁶ (Earth) and 2 × 10⁻⁵ (Mars).
 - After exactly one period every orbit returns to its starting position to within 0.0002 km, so the Kepler solver converges.
+
+## Facilities and routes (build step 8)
+
+- **Ceres propellant plant** (`facilities.json`): turns water into propellant. Output per day = peak output (1000 kg/day) x availability of water on Ceres (0.4) x conversion (1.0), so 400 kg/day. Storage 500 000 kg, starts empty at the game start. All numbers are placeholders.
+- **Arrival orbit altitude** (`default_orbit_altitude_km` in `bodies.json`): Earth 400, Moon 100, Mars 400, Ceres 100, Phobos 20, Deimos 20. Placeholders.
+- **Destinations** from a body: its own moons; if it is a moon, its planet and the planet's other moons; and the other planets and dwarf planets that orbit the Sun.
+- **Route types** (all 2D patched conics): a moon of the body the ship orbits; from a moon to its planet (no window, leaves at once); between two bodies around the same body (two planets, or two moons of one planet); from a moon to another planet (the escape from the moon is estimated assuming the best direction, the moon's phase is not modelled). The transfer is a half ellipse between the actual distances at departure and arrival.
+- **Fuel:** the ship's tank is a delta-v tank. The design screen saves the total propellant and delta-v, and the game derives an equivalent single stage from them with the rocket equation (average exhaust velocity weighted by propellant mass, and the dry mass that gives the same delta-v). So the propellant mass and the delta-v of the tank always match, and burns and refuelling move along that curve. Stage structure is ignored.

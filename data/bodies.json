@@ -7,7 +7,8 @@
     "angles": "degrees",
     "gm": "km^3/s^2",
     "mass": "kg",
-    "density": "kg/m^3"
+    "density": "kg/m^3",
+    "default_orbit_altitude_km": "km above the surface; altitude of the circular orbit a ship uses when it arrives (placeholder values)"
   },
   "game_start": {
     "date": "2035-01-01T00:00:00",
@@ -43,6 +44,7 @@
       "gm_km3_s2": 398600.435507,
       "mass_kg": 5.9722e+24,
       "radius_km": 6371.0,
+      "default_orbit_altitude_km": 400.0,
       "atmosphere": {
         "surface_density_kg_m3": 1.217,
         "scale_height_km": 8.5
@@ -84,6 +86,7 @@
       "gm_km3_s2": 4902.800118,
       "mass_kg": 7.349e+22,
       "radius_km": 1737.4,
+      "default_orbit_altitude_km": 100.0,
       "atmosphere": null,
       "resources": {
         "water": {
@@ -122,6 +125,7 @@
       "gm_km3_s2": 42828.375816,
       "mass_kg": 6.4169e+23,
       "radius_km": 3389.5,
+      "default_orbit_altitude_km": 400.0,
       "atmosphere": {
         "surface_density_kg_m3": 0.016,
         "scale_height_km": 11.0
@@ -163,6 +167,7 @@
       "gm_km3_s2": 0.0007087,
       "mass_kg": 1.061834199841182e+16,
       "radius_km": 11.08,
+      "default_orbit_altitude_km": 20.0,
       "atmosphere": null,
       "resources": {},
       "home": false,
@@ -196,6 +201,7 @@
       "gm_km3_s2": 9.62e-05,
       "mass_kg": 1441349654645431.0,
       "radius_km": 6.2,
+      "default_orbit_altitude_km": 20.0,
       "atmosphere": null,
       "resources": {},
       "home": false,
@@ -229,6 +235,7 @@
       "gm_km3_s2": 62.63109725599999,
       "mass_kg": 9.38392e+20,
       "radius_km": 469.7,
+      "default_orbit_altitude_km": 100.0,
       "atmosphere": null,
       "resources": {
         "water": {

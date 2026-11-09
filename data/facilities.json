@@ -1,0 +1,17 @@
+{
+  "format_version": 1,
+  "notes": "Placeholder values for balancing. A propellant plant turns water into propellant (conversion in kg of propellant per kg of water). Production per day is peak_output_kg_per_day multiplied by the availability of the resource on the body (see bodies.json).",
+  "facilities": [
+    {
+      "id": "ceres_plant",
+      "name": "Ceres propellant plant",
+      "body": "ceres",
+      "type": "propellant_plant",
+      "resource": "water",
+      "conversion": 1.0,
+      "peak_output_kg_per_day": 1000.0,
+      "storage_capacity_kg": 500000.0,
+      "start_stock_kg": 0.0
+    }
+  ]
+}
