@@ -73,3 +73,7 @@ Kilometres, days (Julian Date), degrees, GM in km³/s², mass in kg. The game st
 - **Destinations** from a body: its own moons; if it is a moon, its planet and the planet's other moons; and the other planets and dwarf planets that orbit the Sun.
 - **Route types** (all 2D patched conics): a moon of the body the ship orbits; from a moon to its planet (no window, leaves at once); between two bodies around the same body (two planets, or two moons of one planet); from a moon to another planet (the escape from the moon is estimated assuming the best direction, the moon's phase is not modelled). The transfer is a half ellipse between the actual distances at departure and arrival.
 - **Fuel:** the ship's tank is a delta-v tank. The design screen saves the total propellant and delta-v, and the game derives an equivalent single stage from them with the rocket equation (average exhaust velocity weighted by propellant mass, and the dry mass that gives the same delta-v). So the propellant mass and the delta-v of the tank always match, and burns and refuelling move along that curve. Stage structure is ignored.
+
+## Settings and facility types (step 8c)
+- `settings.json`: start budget (EUR, placeholder 1e12) and the facilities present at game start (a shipyard at Earth).
+- `facilities.json`: facility *types*. A type with a `kit` can be bought at a shipyard (cost_eur, mass_kg of the ship's payload) and deployed from orbit at a body where its resource is available. The Ceres propellant plant is no longer prebuilt.

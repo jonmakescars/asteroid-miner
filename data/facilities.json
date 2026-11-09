@@ -1,17 +1,22 @@
 {
   "format_version": 1,
-  "notes": "Placeholder values for balancing. A propellant plant turns water into propellant (conversion in kg of propellant per kg of water). Production per day is peak_output_kg_per_day multiplied by the availability of the resource on the body (see bodies.json).",
-  "facilities": [
+  "notes": "Facility types. Placeholder values for balancing. A propellant plant turns the named resource into propellant: output per day = peak_output_kg_per_day x availability of the resource on the body (see bodies.json) x conversion. A type with a 'kit' can be loaded onto a ship at a shipyard (costs cost_eur, takes mass_kg of the ship's payload) and deployed at a body from orbit.",
+  "types": [
     {
-      "id": "ceres_plant",
-      "name": "Ceres propellant plant",
-      "body": "ceres",
-      "type": "propellant_plant",
+      "id": "propellant_plant",
+      "name": "Propellant plant",
+      "kind": "propellant_plant",
       "resource": "water",
       "conversion": 1.0,
       "peak_output_kg_per_day": 1000.0,
       "storage_capacity_kg": 500000.0,
-      "start_stock_kg": 0.0
+      "start_stock_kg": 0.0,
+      "kit": { "mass_kg": 3000.0, "cost_eur": 200000000.0 }
+    },
+    {
+      "id": "shipyard",
+      "name": "Orbital shipyard",
+      "kind": "shipyard"
     }
   ]
 }

@@ -10,8 +10,7 @@ signal navigate(scene_path: String)
 signal view_pressed
 
 const SCREENS := [
-	["Solar system", "res://main.tscn"],
-	["Mission planner", "res://mission.tscn"],
+	["Map", "res://main.tscn"],
 	["Ship design", "res://ship_design.tscn"],
 	["Menu", "res://menu.tscn"],
 ]
@@ -19,6 +18,7 @@ const SCREENS := [
 var box: VBoxContainer
 var pause_button: Button
 var view_button: Button
+var design_button: Button
 var date_label: Label
 var status_label: Label
 
@@ -38,7 +38,10 @@ func setup(current_scene: String, view_text: String) -> void:
 	for screen in SCREENS:
 		var path: String = screen[1]
 		if path != current_scene:
-			_add_button(row, screen[0], func() -> void: navigate.emit(path))
+			var button := _add_button(row, screen[0], func() -> void: navigate.emit(path))
+			if path == "res://ship_design.tscn":
+				design_button = button
+				button.visible = false
 
 	var time_row := HBoxContainer.new()
 	box.add_child(time_row)
@@ -53,6 +56,12 @@ func add_row() -> HFlowContainer:
 	var row := HFlowContainer.new()
 	box.add_child(row)
 	return row
+
+
+## The Ship design button is only offered where the ship is at a shipyard.
+func set_design_visible(value: bool) -> void:
+	if design_button != null:
+		design_button.visible = value
 
 
 func set_view_text(text: String) -> void:

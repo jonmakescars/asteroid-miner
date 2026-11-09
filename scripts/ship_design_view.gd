@@ -103,9 +103,9 @@ func _build_ui() -> void:
 	menu_button.pressed.connect(func() -> void: get_tree().change_scene_to_file("res://menu.tscn"))
 	box.add_child(menu_button)
 	var mission_button := Button.new()
-	mission_button.text = "Mission planner"
+	mission_button.text = "Orbit map"
 	mission_button.custom_minimum_size = Vector2(0, 40)
-	mission_button.pressed.connect(func() -> void: get_tree().change_scene_to_file("res://mission.tscn"))
+	mission_button.pressed.connect(func() -> void: get_tree().change_scene_to_file("res://main.tscn"))
 	box.add_child(mission_button)
 	_add_heading(box, "Ship design (prototype step 5)")
 	var name_row := HBoxContainer.new()

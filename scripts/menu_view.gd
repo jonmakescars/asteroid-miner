@@ -3,9 +3,8 @@ extends Control
 
 const MOBILE_UI_SCALE := 2.0
 const ENTRIES := [
-	["Mission planner", "res://mission.tscn"],
+	["Orbit map", "res://main.tscn"],
 	["Ship design", "res://ship_design.tscn"],
-	["Solar system view", "res://main.tscn"],
 ]
 
 

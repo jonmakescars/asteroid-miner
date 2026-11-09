@@ -1,8 +1,13 @@
 extends Control
-## Mission planner: plan and fly a mission on rails from the body the ship is orbiting to any
-## destination the planner offers (see MissionPlanner). "Plan" finds the next launch window and the
-## burns; "Launch" commits the plan; then run time forward (or use "Skip to Departure") and watch the
-## ship follow its orbit legs. The ship stays where it arrives; at a body with a propellant plant it can refuel.
+## Orbit view: the one map screen. It shows a system (the Sun, a planet with its moons) with the bodies
+## on rails, the ship and its planned route. The panels below the top bar depend on the context:
+##  - the mission planner (destination, Plan, Launch, Skip) appears in a system that contains a ship
+##    that can launch (it is in orbit around the body in view or one of its moons), or while a plan waits;
+##  - ship operations (refuel, load facility kits at a shipyard, deploy a kit) appear with the planner,
+##    each only where it is possible;
+##  - the Ship design button in the top bar appears where the ship is at a shipyard.
+## "Plan" finds the next launch window and the burns; "Launch" commits the plan; then run time forward
+## (or use "Skip to Departure") and watch the ship follow its orbit legs.
 
 const SKIP_LEAD_DAYS := 120.0 / 86400.0  # "skip to departure" stops two minutes before the burn
 const MIN_LAUNCH_DELAY_DAYS := 10.0 / 86400.0  # a plan never starts earlier than this after "now"
@@ -47,6 +52,10 @@ var plan_button: Button
 var launch_button: Button
 var skip_button: Button
 var refuel_button: Button
+var deploy_button: Button
+var planner_row: HFlowContainer
+var ops_row: HFlowContainer
+var kit_buttons: Dictionary = {}   # facility type id -> button
 
 
 func _ready() -> void:
@@ -57,14 +66,14 @@ func _ready() -> void:
 		set_process(false)
 		return
 	frames = ["auto"] + GameState.bodies.keys()
-	frame_index = GameState.mission_frame_index
+	frame_index = GameState.view_frame_index
 	_build_ui()
-	_fill_destinations(GameState.mission_target_id)
+	_fill_destinations(GameState.view_target_id)
 
 
 func _goto(scene_path: String) -> void:
-	GameState.mission_frame_index = frame_index
-	GameState.mission_target_id = _selected_target_id()
+	GameState.view_frame_index = frame_index
+	GameState.view_target_id = _selected_target_id()
 	get_tree().change_scene_to_file(scene_path)
 
 
@@ -72,20 +81,28 @@ func _goto(scene_path: String) -> void:
 
 func _build_ui() -> void:
 	bar = TopBar.new()
-	bar.setup("res://mission.tscn", "View: auto")
+	bar.setup("res://main.tscn", "View: auto")
 	bar.view_pressed.connect(func() -> void: frame_index = (frame_index + 1) % frames.size())
 	bar.navigate.connect(_goto)
 	add_child(bar)
 
-	var row := bar.add_row()
+	planner_row = bar.add_row()
+	var row := planner_row
 	target_picker = OptionButton.new()
 	target_picker.item_selected.connect(func(_i: int) -> void: _on_target_changed())
 	row.add_child(target_picker)
 	plan_button = _add_button(row, "Plan", _on_plan)
 	launch_button = _add_button(row, "Launch", _on_launch)
 	skip_button = _add_button(row, "Skip to Departure & Launch", _on_skip)
-	refuel_button = _add_button(row, "Refuel", _on_refuel)
-	_add_button(row, "Reset", _on_reset)
+	ops_row = bar.add_row()
+	refuel_button = _add_button(ops_row, "Refuel", _on_refuel)
+	for type_id in GameState.kit_type_ids():
+		var id: String = type_id
+		var kit_button := _add_button(ops_row, "Load %s kit" % str(GameState.facility_types[id]["name"]).to_lower(),
+				func() -> void: GameState.message = GameState.load_kit(id))
+		kit_buttons[id] = kit_button
+	deploy_button = _add_button(ops_row, "Deploy", _on_deploy)
+	_add_button(ops_row, "Reset game", _on_reset)
 
 	info_label = Label.new()
 	info_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
@@ -104,6 +121,23 @@ func _gui_input(event: InputEvent) -> void:
 	GameState.change_warp(-1 if click.position.x < size.x * 0.5 else 1)
 
 
+func _unhandled_input(event: InputEvent) -> void:
+	var key := event as InputEventKey
+	if key == null or not key.pressed or key.echo:
+		return
+	match key.keycode:
+		KEY_TAB:
+			frame_index = (frame_index + 1) % frames.size()
+		KEY_ESCAPE:
+			_goto("res://menu.tscn")
+		KEY_SPACE:
+			GameState.toggle_pause()
+		KEY_EQUAL, KEY_KP_ADD, KEY_PERIOD:
+			GameState.change_warp(1)
+		KEY_MINUS, KEY_KP_SUBTRACT, KEY_COMMA:
+			GameState.change_warp(-1)
+
+
 func _add_button(parent: Control, text: String, action: Callable) -> Button:
 	var button := Button.new()
 	button.text = text
@@ -111,12 +145,6 @@ func _add_button(parent: Control, text: String, action: Callable) -> Button:
 	button.pressed.connect(action)
 	parent.add_child(button)
 	return button
-
-
-## The body the ship is in orbit around, or "" while it is on a transfer.
-func _ship_body() -> String:
-	var leg := GameState.parked_leg()
-	return "" if leg.is_empty() else str(leg["parent"])
 
 
 func _selected_target_id() -> String:
@@ -127,7 +155,7 @@ func _selected_target_id() -> String:
 
 ## Fills the destination picker for the body the ship is at; keeps the previous choice if still offered.
 func _fill_destinations(keep_id: String) -> void:
-	picker_origin = _ship_body()
+	picker_origin = GameState.ship_body()
 	target_picker.clear()
 	destination_ids = []
 	if picker_origin == "":
@@ -189,7 +217,11 @@ func _on_skip() -> void:
 
 func _on_refuel() -> void:
 	var amount := GameState.refuel()
-	message = "Refuelled %s kg." % _kg_text(amount) if amount > 0.0 else "Nothing to refuel."
+	message = "Refuelled %s kg." % GameState.thousands(amount) if amount > 0.0 else "Nothing to refuel."
+
+
+func _on_deploy() -> void:
+	message = GameState.deploy_kit()
 
 
 func _on_reset() -> void:
@@ -240,7 +272,7 @@ func _frame_id() -> String:
 
 func _process(delta: float) -> void:
 	GameState.advance(delta)
-	if picker_origin != _ship_body():
+	if picker_origin != GameState.ship_body():
 		_fill_destinations(_selected_target_id())
 	_update_ui()
 	queue_redraw()
@@ -255,9 +287,20 @@ func _update_ui() -> void:
 	launch_button.disabled = plan.is_empty() or plan["committed"] or not affordable or not window_open
 	skip_button.disabled = plan.is_empty() or not window_open or not affordable
 	skip_button.text = "Skip to Departure" if not plan.is_empty() and plan["committed"] else "Skip to Departure & Launch"
-	var facility: Dictionary = GameState.facility_at(_ship_body()) if _ship_body() != "" else {}
-	refuel_button.disabled = facility.is_empty() or float(facility.get("stock_kg", 0.0)) <= 0.0 \
+	var ship_body := GameState.ship_body()
+	var plant: Dictionary = GameState.facility_of_kind(ship_body, "propellant_plant") if ship_body != "" else {}
+	refuel_button.visible = not plant.is_empty()
+	refuel_button.disabled = float(plant.get("stock_kg", 0.0)) <= 0.0 \
 			or GameState.ship_fuel_kg >= GameState.ship_fuel_capacity_kg - 0.001
+	var at_yard := ship_body != "" and not GameState.facility_of_kind(ship_body, "shipyard").is_empty()
+	for type_id in kit_buttons:
+		kit_buttons[type_id].visible = at_yard
+		kit_buttons[type_id].disabled = GameState.kit_load_problem(type_id) != ""
+	deploy_button.visible = GameState.deployable_type() != ""
+	var frame_id := _frame_id()
+	planner_row.visible = GameState.planner_available(frame_id)
+	ops_row.visible = true
+	bar.set_design_visible(GameState.design_available(frame_id))
 	bar.set_view_text("View: " + str(frames[frame_index]))
 	bar.refresh()
 	info_label.text = _info_text()
@@ -269,37 +312,36 @@ func _span_text(days: float) -> String:
 	return "%.1f days" % days
 
 
-## A mass with thousands separators, for example 120,000.
-func _kg_text(kg: float) -> String:
-	var digits := str(int(round(kg)))
-	var out := ""
-	for i in digits.length():
-		if i > 0 and (digits.length() - i) % 3 == 0:
-			out += ","
-		out += digits[i]
-	return out
-
-
 func _fuel_text() -> String:
 	return "%s kg (%.2f km/s) of %s kg (%.2f km/s)" % [
-			_kg_text(GameState.ship_fuel_kg), GameState.dv_left_kms(),
-			_kg_text(GameState.ship_fuel_capacity_kg), GameState.ship_dv_kms]
+			GameState.thousands(GameState.ship_fuel_kg), GameState.dv_left_kms(),
+			GameState.thousands(GameState.ship_fuel_capacity_kg), GameState.ship_dv_kms]
 
 
 func _info_text() -> String:
 	var lines: PackedStringArray = []
 	lines.append("%s: %s" % [GameState.ship_name, legs[_leg_index_at(time_jd)]["label"]])
 	lines.append("Fuel: %s" % _fuel_text())
+	lines.append("Budget: %s EUR" % GameState.thousands(GameState.budget_eur))
+	if not GameState.cargo.is_empty():
+		var names: PackedStringArray = []
+		for type_id in GameState.cargo:
+			names.append(str(GameState.facility_types[type_id]["name"]))
+		lines.append("Cargo (%s of %s kg): %s" % [GameState.thousands(GameState.cargo_mass_kg()),
+				GameState.thousands(GameState.ship_payload_kg), ", ".join(names)])
 	for id in GameState.facilities:
 		var facility: Dictionary = GameState.facilities[id]
-		lines.append("%s: %s kg of %s kg (+%s kg/day)" % [facility["name"], _kg_text(float(facility["stock_kg"])),
-				_kg_text(float(facility["storage_capacity_kg"])), _kg_text(GameState.facility_output_per_day(facility))])
+		if facility["kind"] != "propellant_plant":
+			lines.append(str(facility["name"]))
+			continue
+		lines.append("%s: %s kg of %s kg (+%s kg/day)" % [facility["name"], GameState.thousands(float(facility["stock_kg"])),
+				GameState.thousands(float(facility["storage_capacity_kg"])), GameState.thousands(GameState.facility_output_per_day(facility))])
 	if plan.is_empty():
 		if message != "":
 			lines.append(message)
 		elif _in_transit():
 			lines.append("In transit.")
-		else:
+		elif planner_row.visible:
 			lines.append("Choose a destination and press Plan to find the next launch window.")
 		return "\n".join(lines)
 	lines.append("Plan: %s to %s" % [bodies[plan["origin_id"]]["name"], plan["target_name"]])
@@ -381,7 +423,8 @@ func _draw_body(id: String, screen_position: Vector2, px_per_km: float) -> void:
 	if radius_px < RING_RADIUS_PX:
 		draw_arc(screen_position, RING_RADIUS_PX, 0.0, TAU, 32, colour, 1.5, true)
 		radius_px = RING_RADIUS_PX
-	if not GameState.facility_at(id).is_empty():
-		draw_rect(Rect2(screen_position + Vector2(-radius_px - 9.0, -radius_px - 9.0), Vector2(7, 7)), Color(1.0, 0.6, 0.2))
+	var facility_count := GameState.facilities_at(id).size()
+	for n in facility_count:
+		draw_rect(Rect2(screen_position + Vector2(-radius_px - 9.0 - 9.0 * n, -radius_px - 9.0), Vector2(7, 7)), Color(1.0, 0.6, 0.2))
 	draw_string(ThemeDB.fallback_font, screen_position + Vector2(radius_px + 4.0, 5.0), body["name"],
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(1, 1, 1, 0.8))
