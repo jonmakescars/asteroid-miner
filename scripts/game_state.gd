@@ -263,6 +263,23 @@ static func leg_index_at(jd: float) -> int:
 	return chosen
 
 
+## Position (km) of the ship relative to the body frame_id. Vector2 holds 32-bit numbers, so subtracting
+## two positions measured from the Sun (about 2e8 km) would lose several km of precision. Instead the
+## ship's position around its body is added up the chain of parent bodies until it reaches the frame
+## body; only when the frame is not an ancestor does it fall back to the difference of Sun positions.
+static func ship_rel(frame_id: String, jd: float) -> Vector2:
+	var leg: Dictionary = legs[leg_index_at(jd)]
+	var total: Vector2 = Kepler.position_at(leg["segment"], jd)
+	var current := str(leg["parent"])
+	while current != frame_id:
+		var parent_id: Variant = bodies[current]["parent"]
+		if parent_id == null:
+			return ship_abs(jd) - body_abs(frame_id, jd)
+		total += body_rel(current, jd)
+		current = str(parent_id)
+	return total
+
+
 ## Position (km) of the ship relative to the Sun.
 static func ship_abs(jd: float) -> Vector2:
 	var leg: Dictionary = legs[leg_index_at(jd)]

@@ -106,7 +106,7 @@ func _draw() -> void:
 		var segment := Kepler.segment_at(bodies[kid_id]["orbit_segments"], time_jd)
 		_draw_body(kid_id, _to_screen(Kepler.position_at(segment, time_jd), centre, px_per_km), px_per_km)
 
-	var ship_local := GameState.ship_abs(time_jd) - GameState.body_abs(focus_id, time_jd)
+	var ship_local := GameState.ship_rel(focus_id, time_jd)
 	var p := _to_screen(ship_local, centre, px_per_km)
 	draw_colored_polygon(PackedVector2Array([p + Vector2(0, -7), p + Vector2(6, 5), p + Vector2(-6, 5)]), Color.WHITE)
 	draw_string(ThemeDB.fallback_font, p + Vector2(10, 22), GameState.ship_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color.WHITE)

@@ -5,6 +5,7 @@ extends Control
 ## ship follow its orbit legs. The ship stays where it arrives; at a body with a propellant plant it can refuel.
 
 const SKIP_LEAD_DAYS := 120.0 / 86400.0  # "skip to departure" stops two minutes before the burn
+const MIN_LAUNCH_DELAY_DAYS := 10.0 / 86400.0  # a plan never starts earlier than this after "now"
 const MIN_BODY_RADIUS_PX := 3.0
 const RING_RADIUS_PX := 10.0
 const ORBIT_SAMPLES := 160
@@ -151,7 +152,7 @@ func _on_plan() -> void:
 	if parked.is_empty():
 		return
 	legs = [parked]
-	var result := MissionPlanner.make_plan(str(parked["parent"]), parked["segment"], _selected_target_id(), time_jd)
+	var result := MissionPlanner.make_plan(str(parked["parent"]), parked["segment"], _selected_target_id(), time_jd + MIN_LAUNCH_DELAY_DAYS)
 	paused = true
 	if result.has("error"):
 		plan = {}
@@ -250,7 +251,7 @@ func _update_ui() -> void:
 	plan_button.disabled = in_transit or destination_ids.is_empty()
 	target_picker.disabled = in_transit
 	var affordable := not plan.is_empty() and _plan_dv_total() <= GameState.dv_left_kms() + 0.00001
-	var window_open := not plan.is_empty() and time_jd < float(plan["t_dep"]) - 0.0001
+	var window_open := not plan.is_empty() and time_jd < float(plan["t_dep"])
 	launch_button.disabled = plan.is_empty() or plan["committed"] or not affordable or not window_open
 	skip_button.disabled = plan.is_empty() or not window_open or not affordable
 	skip_button.text = "Skip to Departure" if not plan.is_empty() and plan["committed"] else "Skip to Departure & Launch"
@@ -362,7 +363,7 @@ func _draw() -> void:
 		var segment := Kepler.segment_at(bodies[kid_id]["orbit_segments"], time_jd)
 		_draw_body(kid_id, _to_screen(Kepler.position_at(segment, time_jd), centre, px_per_km), px_per_km)
 
-	var ship_local := _ship_abs(time_jd) - _body_abs(frame_id, time_jd)
+	var ship_local := GameState.ship_rel(frame_id, time_jd)
 	var p := _to_screen(ship_local, centre, px_per_km)
 	draw_colored_polygon(PackedVector2Array([p + Vector2(0, -7), p + Vector2(6, 5), p + Vector2(-6, 5)]), Color.WHITE)
 	draw_string(ThemeDB.fallback_font, p + Vector2(10, 22), GameState.ship_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color.WHITE)
