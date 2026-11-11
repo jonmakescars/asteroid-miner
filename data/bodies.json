@@ -47,7 +47,8 @@
       "default_orbit_altitude_km": 400.0,
       "atmosphere": {
         "surface_density_kg_m3": 1.217,
-        "scale_height_km": 8.5
+        "scale_height_km": 8.5,
+        "min_periapsis_altitude_km": 60.0
       },
       "resources": {
         "water": {
@@ -128,7 +129,8 @@
       "default_orbit_altitude_km": 400.0,
       "atmosphere": {
         "surface_density_kg_m3": 0.016,
-        "scale_height_km": 11.0
+        "scale_height_km": 11.0,
+        "min_periapsis_altitude_km": 25.0
       },
       "resources": {
         "water": {

@@ -110,7 +110,7 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 	else:
 		return {"error": "No route to %s from here yet." % target["name"]}
 
-	return {
+	var plan := {
 		"origin_id": origin_id,
 		"target_id": target_id,
 		"target_name": target["name"],
@@ -125,7 +125,13 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 		"committed": false,
 		"departure_done": false,
 		"arrival_seen": false,
+		"capture_radius": capture_radius,
+		"capture_phase_deg": capture_phase_deg,
+		"gm_target": target_gm,
+		"dv_capture": dv_arrival,
 	}
+	AeroBraking.setup_plan(plan)   # adds the aerobraking data and the capture legs
+	return plan
 
 
 static func _period_days(id: String) -> float:

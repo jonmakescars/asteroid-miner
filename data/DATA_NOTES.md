@@ -77,3 +77,10 @@ Kilometres, days (Julian Date), degrees, GM in km³/s², mass in kg. The game st
 ## Settings and facility types (step 8c)
 - `settings.json`: start budget (EUR, placeholder 1e12) and the facilities present at game start (a shipyard at Earth).
 - `facilities.json`: facility *types*. A type with a `kit` can be bought at a shipyard (cost_eur, mass_kg of the ship's payload) and deployed from orbit at a body where its resource is available. The Ceres propellant plant is no longer prebuilt.
+
+## Aerobraking (step 7)
+- `atmosphere` in bodies.json (Earth, Mars): surface_density_kg_m3, scale_height_km, min_periapsis_altitude_km (placeholder floor for the planner). Exponential atmosphere; a pass starts where the density is 1e-8 kg/m3.
+- Pass physics: RK4 in the orbit plane, drag = rho v^2 / (2 beta), beta = mass / (1.5 x area); heating = Sutton-Graves (1.7415e-4 sqrt(rho / nose radius) v^3), nose radius = sqrt(area / pi); peak deceleration in g. No lift.
+- Ship size: sphere of 300 kg/m3 average density (placeholder until hull types exist). Shield: 3 kg per m2 per cm of thickness, 15 MJ/m2 of heat load per cm (placeholders). Planner uses at most 80% of the remaining shield and a 10 g limit (cargo only).
+- Several passes use the same periapsis altitude; the trim burns between passes are ignored.
+- A pass that overloads the shield or the g limit damages ship health in proportion to the excess. `shield_cost_eur_per_kg` (settings.json) is the price of a replacement shield at a shipyard.

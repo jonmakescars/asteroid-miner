@@ -8,6 +8,7 @@ const DESIGN_PATH := "user://ship_design.json"  # read by the mission planner
 const MOBILE_UI_SCALE := 2.5  # phone screens are dense; the UI is scaled up there only
 const PAYLOAD_RANGE := Vector2(100.0, 500000.0)       # kg
 const PROPELLANT_RANGE := Vector2(100.0, 2000000.0)   # kg
+const SHIELD_RANGE := Vector2(0.0, 30.0)               # cm
 const THRUST_RANGE := Vector2(1.0, 50000.0)           # kN
 
 # Starting design: roughly a 10 km/s ship with a 5 t payload.
@@ -32,6 +33,10 @@ var payload_ctl: Dictionary = {}
 var stage_ctls: Array = []       # per stage: {"engine": OptionButton, "propellant": ctl, "thrust": ctl, "durability": ctl}
 var ship_name := "Ship 1"
 var start_payload_kg := DEFAULT_PAYLOAD_KG
+var start_shield_cm := GameState.DEFAULT_SHIELD_CM
+var shield_ctl: Dictionary = {}
+var shield_area_m2 := 0.0
+var shield_mass_kg := 0.0
 var start_stages: Array = []     # starting values of the sliders (defaults, or the last saved design)
 var result_label: Label
 
@@ -68,6 +73,7 @@ func _apply_saved_design() -> void:
 		return
 	ship_name = str(saved.get("name", ship_name))
 	start_payload_kg = clampf(float(saved.get("payload_kg", start_payload_kg)), PAYLOAD_RANGE.x, PAYLOAD_RANGE.y)
+	start_shield_cm = clampf(float(saved.get("shield_cm", start_shield_cm)), 0.0, SHIELD_RANGE.y)
 	var saved_stages: Variant = saved.get("stages", [])
 	if typeof(saved_stages) != TYPE_ARRAY or saved_stages.size() != start_stages.size():
 		return
@@ -123,6 +129,7 @@ func _build_ui() -> void:
 		_refresh())
 	name_row.add_child(name_edit)
 	payload_ctl = _add_slider(box, "Payload", PAYLOAD_RANGE, true, start_payload_kg, "kg")
+	shield_ctl = _add_slider(box, "Heat shield thickness", SHIELD_RANGE, false, start_shield_cm, "cm")
 
 	for i in start_stages.size():
 		var defaults: Dictionary = start_stages[i]
@@ -250,10 +257,20 @@ func _refresh() -> void:
 			"durability": _value_of(ctls["durability"]),
 		})
 
-	var analysis := ShipCalc.analyse(stages, engines, rules, payload_kg)
+	_update_label(shield_ctl)
+	# The shield's area follows from the ship's size, which includes the shield: a few rounds settle it.
+	var shield_cm := _value_of(shield_ctl)
+	var bare_mass := float(ShipCalc.analyse(stages, engines, rules, payload_kg)["total_mass_kg"])
+	shield_mass_kg = 0.0
+	for _i in 4:
+		shield_area_m2 = AeroBraking.area_for_mass(bare_mass + shield_mass_kg)
+		shield_mass_kg = AeroBraking.shield_mass_kg(shield_cm, shield_area_m2)
+	var analysis := ShipCalc.analyse(stages, engines, rules, payload_kg + shield_mass_kg)
 	var lines: PackedStringArray = []
 	lines.append("Total delta-v: %s km/s" % _num(float(analysis["total_dv_ms"]) / 1000.0))
 	lines.append("Total mass at launch: %s t" % _num(float(analysis["total_mass_kg"]) / 1000.0))
+	lines.append("Heat shield: %s t over %s m2, takes %s MJ/m2 of heat (used for aerobraking at Earth and Mars)" % [
+			_num(shield_mass_kg / 1000.0), _num(shield_area_m2), _num(AeroBraking.shield_capacity_mj_m2(shield_cm))])
 	for i in stages.size():
 		var result: Dictionary = analysis["stages"][i]
 		var accel := float(result["accel_start_ms2"])
@@ -308,6 +325,9 @@ func _save_design(stages: Array, payload_kg: float, analysis: Dictionary) -> voi
 	file.store_string(JSON.stringify({
 		"name": ship_name.strip_edges() if ship_name.strip_edges() != "" else "Unnamed ship",
 		"payload_kg": payload_kg,
+		"shield_cm": _value_of(shield_ctl),
+		"shield_area_m2": shield_area_m2,
+		"shield_mass_kg": shield_mass_kg,
 		"stages": stages,
 		"total_dv_ms": total_dv_ms,
 		"total_mass_kg": analysis["total_mass_kg"],

@@ -12,6 +12,8 @@ const DEFAULT_SHIP_DV_KMS := 10.0
 const DEFAULT_SHIP_PROPELLANT_KG := 120000.0
 const DEFAULT_SHIP_VE_MS := 3900.0   # effective exhaust velocity of the default ship
 const DEFAULT_SHIP_PAYLOAD_KG := 5000.0
+const DEFAULT_SHIELD_CM := 15.0
+const AERO_WARP_INDEX := 1   # time flow drops to this (1 min/s) when the ship reaches the upper atmosphere
 const WARP_STEPS := [1.0 / 86400.0, 1.0 / 1440.0, 1.0 / 24.0, 1.0, 10.0, 100.0, 1000.0]  # game days per real second
 const WARP_LABELS := ["real time", "1 min/s", "1 h/s", "1 day/s", "10 days/s", "100 days/s", "1000 days/s"]
 
@@ -24,6 +26,7 @@ static var start_facilities: Array = []
 static var start_budget_eur := 0.0
 static var propellant_price_eur_per_kg := 0.0
 static var mission_cost_eur := 0.0
+static var shield_cost_eur_per_kg := 0.0
 static var start_jd := 0.0
 
 # Game clock.
@@ -48,6 +51,12 @@ static var ship_payload_kg := DEFAULT_SHIP_PAYLOAD_KG   # cargo capacity
 static var ship_fuel_capacity_kg := DEFAULT_SHIP_PROPELLANT_KG
 static var ship_ve_ms := DEFAULT_SHIP_VE_MS
 static var ship_dry_kg := DEFAULT_SHIP_PROPELLANT_KG / (exp(DEFAULT_SHIP_DV_KMS * 1000.0 / DEFAULT_SHIP_VE_MS) - 1.0)
+# The heat shield: thickness, area, and the heat load (MJ/m2) it has already absorbed. Health drops when a
+# pass overloads the shield or the g limit.
+static var ship_shield_cm := DEFAULT_SHIELD_CM
+static var ship_shield_area_m2 := AeroBraking.area_for_mass(DEFAULT_SHIP_PROPELLANT_KG * (1.0 + 1.0 / (exp(DEFAULT_SHIP_DV_KMS * 1000.0 / DEFAULT_SHIP_VE_MS) - 1.0)))
+static var shield_used_mj_m2 := 0.0
+static var ship_health := 1.0
 static var ship_fuel_kg := -1.0                         # current propellant; negative = not set yet
 static var ship_burned := false                         # true once the ship has used any delta-v
 static var ship_dv_source := "default value; design a ship on the ship design screen"
@@ -89,6 +98,7 @@ static func load_data() -> bool:
 			start_facilities = settings["start_facilities"]
 			propellant_price_eur_per_kg = float(settings.get("propellant_price_eur_per_kg", 0.0))
 			mission_cost_eur = float(settings.get("mission_cost_eur", 0.0))
+			shield_cost_eur_per_kg = float(settings.get("shield_cost_eur_per_kg", 0.0))
 		data_loaded = true
 	if not initialized:
 		reset_mission()
@@ -112,6 +122,8 @@ static func reset_mission() -> void:
 	legs = [{"parent": "earth", "segment": parking, "t_start": start_jd, "label": "Orbit around Earth", "kind": "orbit"}]
 	ship_burned = false
 	ship_fuel_kg = ship_fuel_capacity_kg
+	shield_used_mj_m2 = 0.0
+	ship_health = 1.0
 	budget_eur = start_budget_eur
 	facilities = {}
 	for entry in start_facilities:
@@ -131,6 +143,8 @@ static func load_ship_design() -> void:
 				ship_fuel_capacity_kg = float(parsed["propellant_kg"])
 				ship_ve_ms = float(parsed["ve_eff_ms"])
 				ship_dry_kg = float(parsed["dry_eff_kg"])
+			ship_shield_cm = float(parsed.get("shield_cm", ship_shield_cm))
+			ship_shield_area_m2 = float(parsed.get("shield_area_m2", ship_shield_area_m2))
 	# Until the ship has used any fuel the tanks are full; afterwards a new design can only lower the level.
 	if not ship_burned or ship_fuel_kg < 0.0:
 		ship_fuel_kg = ship_fuel_capacity_kg
@@ -168,17 +182,57 @@ static func apply_burn(dv_kms: float) -> void:
 ## the tanks; on arrival the plan is finished and the time flow drops to real time.
 static func advance(delta: float) -> void:
 	if not paused:
-		time_jd += delta * float(WARP_STEPS[warp_index])
+		var step := delta * float(WARP_STEPS[warp_index])
+		var entry := _next_atmosphere_entry()
+		if warp_index > AERO_WARP_INDEX and entry > 0.0 and time_jd + step >= entry:
+			# Never jump over the start of an aerobraking pass: stop there and slow down.
+			time_jd = maxf(time_jd, entry)
+			warp_index = AERO_WARP_INDEX
+			step = delta * float(WARP_STEPS[warp_index])
+		time_jd += step
 	if not plan.is_empty() and plan["committed"]:
 		if not plan["departure_done"] and time_jd >= float(plan["t_dep"]):
 			plan["departure_done"] = true
 			apply_burn(float(plan["dv_departure"]))
-		if time_jd >= float(plan["t_arr"]):
+		if time_jd >= float(plan.get("t_end", plan["t_arr"])):
 			apply_burn(float(plan["dv_arrival"]))
 			message = "Arrived at %s." % plan["target_name"]
+			var aero: Dictionary = plan.get("aero", {})
+			if aero.get("enabled", false) and aero.get("valid", false):
+				message += " " + _take_aerobraking_effects(aero)
 			plan = {}
 			warp_index = 0
 	_update_facilities()
+
+
+## The next time (jd) the committed ship reaches the upper atmosphere, or -1.
+static func _next_atmosphere_entry() -> float:
+	if plan.is_empty() or not plan["committed"]:
+		return -1.0
+	var aero: Dictionary = plan.get("aero", {})
+	if not aero.get("enabled", false) or not aero.get("valid", false):
+		return -1.0
+	for entry in aero["entry_times"]:
+		if float(entry) > time_jd:
+			return float(entry)
+	return -1.0
+
+
+## Adds the heat of the aerobraking passes to the shield and damages the ship if the shield or the g
+## limit was exceeded. Returns a sentence for the message.
+static func _take_aerobraking_effects(aero: Dictionary) -> String:
+	var heat := float(aero["heat"])
+	var left := shield_left_mj_m2()
+	var excess_heat := 0.0
+	if heat > left:
+		excess_heat = 1.0 if left <= 0.0 else heat / left - 1.0
+	var excess_g := maxf(float(aero["peak_g"]) / AeroBraking.G_LIMIT - 1.0, 0.0)
+	shield_used_mj_m2 += heat
+	ship_health = maxf(ship_health - excess_heat - excess_g, 0.0)
+	var text := "Aerobraking used %.0f MJ/m2 of the heat shield." % heat
+	if excess_heat > 0.0 or excess_g > 0.0:
+		text += " The ship was damaged: health is now %.0f%%." % (ship_health * 100.0)
+	return text
 
 
 ## Faster: if paused, resumes at the selected rate; otherwise steps up one rate.
@@ -285,7 +339,7 @@ static func ship_body() -> String:
 
 ## True while the ship is on a transfer orbit between bodies.
 static func ship_in_transit() -> bool:
-	return legs[leg_index_at(time_jd)]["kind"] == "transfer"
+	return legs[leg_index_at(time_jd)]["kind"] != "orbit"
 
 
 ## The mission planner is offered in a system that contains a ship that can launch: the ship is in
@@ -300,6 +354,44 @@ static func planner_available(focus_id: String) -> bool:
 ## The ship designer is offered in a system with a shipbuilding facility, when the ship is at it.
 static func design_available(focus_id: String) -> bool:
 	return ship_body() == focus_id and not facility_of_kind(focus_id, "shipyard").is_empty()
+
+
+# ---------------------------------------------------------------- heat shield
+
+## Heat load (MJ/m2) the shield can still take.
+static func shield_left_mj_m2() -> float:
+	return maxf(AeroBraking.shield_capacity_mj_m2(ship_shield_cm) - shield_used_mj_m2, 0.0)
+
+
+static func shield_mass_kg() -> float:
+	return AeroBraking.shield_mass_kg(ship_shield_cm, ship_shield_area_m2)
+
+
+## Ship mass (kg) after the departure burn, for the aerobraking pass at arrival.
+static func ship_mass_after_departure(dv_departure_kms: float) -> float:
+	return ship_dry_kg + fuel_for_dv(maxf(dv_left_kms() - dv_departure_kms, 0.0))
+
+
+## Why the shield cannot be replaced now ("" if it can).
+static func shield_replace_problem() -> String:
+	if shield_used_mj_m2 <= 0.0:
+		return "The shield is unused."
+	if facility_of_kind(ship_body(), "shipyard").is_empty():
+		return "Shields are replaced at a shipyard."
+	if shield_mass_kg() * shield_cost_eur_per_kg > budget_eur:
+		return "Not enough budget for a new shield."
+	return ""
+
+
+## Replaces the used heat shield at a shipyard. Returns a message.
+static func replace_shield() -> String:
+	var problem := shield_replace_problem()
+	if problem != "":
+		return problem
+	var cost := shield_mass_kg() * shield_cost_eur_per_kg
+	budget_eur -= cost
+	shield_used_mj_m2 = 0.0
+	return "New heat shield fitted for %s EUR." % thousands(cost)
 
 
 # ---------------------------------------------------------------- refuelling and cargo

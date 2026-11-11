@@ -1,6 +1,6 @@
 {
   "format_version": 1,
-  "notes": "Starting conditions of a new game. Placeholder values; the budget is deliberately very large for now. propellant_price_eur_per_kg: price of propellant bought at a shipyard (delivered to orbit). mission_cost_eur: operations cost charged at every launch.",
+  "notes": "Starting conditions of a new game. Placeholder values; the budget is deliberately very large for now. propellant_price_eur_per_kg: price of propellant bought at a shipyard (delivered to orbit). mission_cost_eur: operations cost charged at every launch. shield_cost_eur_per_kg: price of replacing a used heat shield at a shipyard, per kg of shield.",
   "start_budget_eur": 1000000000000.0,
   "start_facilities": [
     {
@@ -9,5 +9,6 @@
     }
   ],
   "propellant_price_eur_per_kg": 2000.0,
-  "mission_cost_eur": 50000000.0
+  "mission_cost_eur": 50000000.0,
+  "shield_cost_eur_per_kg": 10000.0
 }
