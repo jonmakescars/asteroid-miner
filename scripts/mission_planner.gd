@@ -6,6 +6,8 @@ extends RefCounted
 
 const SYNODIC_SEARCH_DAYS := 2000.0   # search period for windows between planets
 const ORBIT_SEARCH_PERIODS := 1.5     # for a ship in orbit around the origin: how many orbits to search
+const NEARLY_CIRCULAR := 0.05         # if periapsis and apoapsis differ by less than this share of the apoapsis, the axis is ignored
+const AXIS_TOLERANCE_DEG := 10.0      # a departure from an elliptical orbit may be this far off the periapsis direction
 
 
 ## The destinations offered at a body: the bodies in its own sphere of influence (its moons, and
@@ -29,9 +31,17 @@ static func destinations(origin_id: String) -> Array:
 	return result
 
 
-## Plans the next departure from the circular orbit orbit_segment around origin_id to target_id, not
-## before t_start. Returns the plan, or {"error": text} if no plan is possible.
-static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: String, t_start: float) -> Dictionary:
+## The default target orbit of a body: circular, at the body's default altitude (as altitudes above the surface).
+static func default_target_orbit(target_id: String) -> Dictionary:
+	var altitude := float(GameState.bodies[target_id]["default_orbit_altitude_km"])
+	return {"rp_alt_km": altitude, "ra_alt_km": altitude + OrbitControl.EPS, "offset_deg": 0.0}
+
+
+## Plans the next departure from the orbit orbit_segment around origin_id to target_id, not before t_start,
+## into the target orbit {"rp_alt_km", "ra_alt_km", "offset_deg"} (altitudes above the surface; the default
+## orbit of the body if empty). Returns the plan, or {"error": text} if no plan is possible.
+static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: String, t_start: float,
+		target_orbit: Dictionary = {}) -> Dictionary:
 	var bodies := GameState.bodies
 	var origin: Dictionary = bodies[origin_id]
 	var target: Dictionary = bodies[target_id]
@@ -39,8 +49,20 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 	var target_parent: Variant = target["parent"]
 	var origin_gm := float(origin["gm_km3_s2"])
 	var target_gm := float(target["gm_km3_s2"])
-	var origin_orbit_radius := float(orbit_segment["semi_major_axis_km"])
-	var capture_radius := float(target["radius_km"]) + float(target["default_orbit_altitude_km"])
+	# The ship leaves from the periapsis of its orbit (the same as the radius for a circular orbit).
+	var origin_orbit_radius := float(orbit_segment["semi_major_axis_km"]) * (1.0 - float(orbit_segment["eccentricity"]))
+	var origin_apoapsis := float(orbit_segment["semi_major_axis_km"]) * (1.0 + float(orbit_segment["eccentricity"]))
+	var origin_circular := OrbitControl.is_circular(origin_orbit_radius, origin_apoapsis)
+	var dv_circularize := 0.0
+	var orbit := default_target_orbit(target_id)
+	orbit.merge(target_orbit, true)
+	var pair := OrbitControl.normalise(float(orbit["rp_alt_km"]), float(orbit["ra_alt_km"]), "rp")
+	orbit["rp_alt_km"] = pair.x
+	orbit["ra_alt_km"] = pair.y
+	var rp_t := float(target["radius_km"]) + pair.x
+	var ra_t := float(target["radius_km"]) + pair.y
+	var capture_radius := maxf(rp_t, 1.0)   # the arrival radius of a transfer to the central body
+	var arrival_energy := 0.0
 	var target_fn := func(t: float) -> Vector2: return GameState.body_rel(target_id, t)
 
 	var frame := ""
@@ -48,6 +70,7 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 	var dv_departure := 0.0
 	var dv_arrival := 0.0
 	var capture_phase_deg := 0.0
+	var aimable := true   # arriving from outside the sphere of influence: the periapsis direction can be aimed
 
 	if target_parent == origin_id:
 		# Down the gravity well's other side: to a moon of the body we orbit. The ship can leave from any
@@ -60,7 +83,8 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 		if transfer.is_empty():
 			return {"error": "No launch window found."}
 		dv_departure = TransferPlanner.departure_dv_bound(transfer, origin_gm)
-		dv_arrival = float(TransferPlanner.arrival_dv(transfer, target_fn, target_gm, capture_radius)["dv_kms"])
+		var v_inf := float(TransferPlanner.arrival_dv(transfer, target_fn, target_gm, capture_radius)["v_inf_kms"])
+		arrival_energy = 0.5 * v_inf * v_inf
 
 	elif origin_parent == target_id:
 		# From a moon to its own planet: no window, the ship can leave at once.
@@ -69,8 +93,17 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 		transfer = TransferPlanner.transfer_to_central(target_gm, origin_fn, t_start, capture_radius)
 		var origin_velocity := TransferPlanner.velocity_kms(origin_fn, t_start)
 		dv_departure = TransferPlanner.departure_dv_escape(transfer, origin_velocity, origin_gm, origin_orbit_radius)
-		dv_arrival = TransferPlanner.arrival_dv_central(transfer)
+		if not origin_circular and origin_apoapsis - origin_orbit_radius >= NEARLY_CIRCULAR * origin_apoapsis:
+			var needed_axis := TransferPlanner.escape_axis_deg(transfer, origin_velocity, origin_gm, origin_orbit_radius)
+			var turn := absf(wrapf(float(orbit_segment["argument_of_periapsis_deg"]) - needed_axis, -180.0, 180.0))
+			if turn > AXIS_TOLERANCE_DEG:
+				# The periapsis points the wrong way: circularise at the apoapsis first, then leave from there.
+				dv_circularize = sqrt(origin_gm / origin_apoapsis) - sqrt(2.0 * origin_gm * origin_orbit_radius \
+						/ (origin_apoapsis * (origin_orbit_radius + origin_apoapsis)))
+				dv_departure = dv_circularize + TransferPlanner.departure_dv_escape(transfer, origin_velocity, origin_gm, origin_apoapsis)
+		arrival_energy = -target_gm / (2.0 * float(transfer["a"]))   # energy of the transfer orbit itself
 		capture_phase_deg = rad_to_deg((transfer["origin"] as Vector2).angle() + PI)
+		aimable = false
 
 	elif origin_parent != null and origin_parent == target_parent:
 		# Two bodies orbiting the same body: two planets, or two moons of one planet.
@@ -89,7 +122,16 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 			return {"error": "No launch window found."}
 		var origin_velocity := TransferPlanner.velocity_kms(origin_fn, float(transfer["t_dep"]))
 		dv_departure = TransferPlanner.departure_dv_escape(transfer, origin_velocity, origin_gm, origin_orbit_radius)
-		dv_arrival = float(TransferPlanner.arrival_dv(transfer, target_fn, target_gm, capture_radius)["dv_kms"])
+		if not origin_circular and origin_apoapsis - origin_orbit_radius >= NEARLY_CIRCULAR * origin_apoapsis:
+			var needed_axis := TransferPlanner.escape_axis_deg(transfer, origin_velocity, origin_gm, origin_orbit_radius)
+			var turn := absf(wrapf(float(orbit_segment["argument_of_periapsis_deg"]) - needed_axis, -180.0, 180.0))
+			if turn > AXIS_TOLERANCE_DEG:
+				# The periapsis points the wrong way: circularise at the apoapsis first, then leave from there.
+				dv_circularize = sqrt(origin_gm / origin_apoapsis) - sqrt(2.0 * origin_gm * origin_orbit_radius \
+						/ (origin_apoapsis * (origin_orbit_radius + origin_apoapsis)))
+				dv_departure = dv_circularize + TransferPlanner.departure_dv_escape(transfer, origin_velocity, origin_gm, origin_apoapsis)
+		var v_inf := float(TransferPlanner.arrival_dv(transfer, target_fn, target_gm, capture_radius)["v_inf_kms"])
+		arrival_energy = 0.5 * v_inf * v_inf
 
 	elif origin_parent != null and origin_parent != "sun" and target_parent == "sun":
 		# From a moon to another planet: the transfer starts at the moon's planet.
@@ -105,11 +147,13 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 		var moon_orbit_radius := GameState.body_rel(origin_id, t_dep).length()
 		dv_departure = TransferPlanner.departure_dv_from_moon(transfer, planet_velocity,
 				float(bodies[planet_id]["gm_km3_s2"]), moon_orbit_radius, origin_gm, origin_orbit_radius)
-		dv_arrival = float(TransferPlanner.arrival_dv(transfer, target_fn, target_gm, capture_radius)["dv_kms"])
+		var v_inf := float(TransferPlanner.arrival_dv(transfer, target_fn, target_gm, capture_radius)["v_inf_kms"])
+		arrival_energy = 0.5 * v_inf * v_inf
 
 	else:
 		return {"error": "No route to %s from here yet." % target["name"]}
 
+	dv_arrival = TransferPlanner.capture_dv(target_gm, arrival_energy, rp_t, ra_t)
 	var plan := {
 		"origin_id": origin_id,
 		"target_id": target_id,
@@ -121,11 +165,16 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 		"dv_departure": dv_departure,
 		"dv_arrival": dv_arrival,
 		"transfer_segment": TransferPlanner.transfer_segment(transfer, float(transfer["gm"])),
-		"capture_segment": TransferPlanner.circular_segment(capture_radius, target_gm, float(transfer["t_arr"]), capture_phase_deg),
+		"target_orbit": orbit,
+		"rp_t": rp_t,
+		"ra_t": ra_t,
+		"offset_deg": float(orbit["offset_deg"]),
+		"aimable": aimable,
+		"dv_circularize": dv_circularize,
+		"arrival_energy": arrival_energy,
 		"committed": false,
 		"departure_done": false,
 		"arrival_seen": false,
-		"capture_radius": capture_radius,
 		"capture_phase_deg": capture_phase_deg,
 		"gm_target": target_gm,
 		"dv_capture": dv_arrival,

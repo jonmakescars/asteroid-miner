@@ -39,6 +39,8 @@ static var warp_index := 0
 # The first leg is the orbit the ship is in when the mission is planned.
 static var legs: Array = []
 static var plan: Dictionary = {}
+## The target orbit the player chose for each destination body: {rp_alt_km, ra_alt_km, offset_deg}.
+static var target_orbits: Dictionary = {}
 static var message := ""
 static var ship_name := "Ship"
 static var cargo: Array = []   # facility type ids of the kits the ship carries
@@ -114,6 +116,7 @@ static func reset_mission() -> void:
 	paused = true
 	warp_index = 0
 	plan = {}
+	target_orbits = {}
 	message = ""
 	cargo = []
 	var earth_gm := float(bodies["earth"]["gm_km3_s2"])
@@ -195,11 +198,16 @@ static func advance(delta: float) -> void:
 			plan["departure_done"] = true
 			apply_burn(float(plan["dv_departure"]))
 		if time_jd >= float(plan.get("t_end", plan["t_arr"])):
-			apply_burn(float(plan["dv_arrival"]))
-			message = "Arrived at %s." % plan["target_name"]
 			var aero: Dictionary = plan.get("aero", {})
-			if aero.get("enabled", false) and aero.get("valid", false):
-				message += " " + _take_aerobraking_effects(aero)
+			if str(plan.get("outcome", "ok")) != "ok":
+				# The planner only warned about this; now it happens. (Placeholder rules: the ship is wrecked.)
+				ship_health = 0.0
+				message = "Ship lost near %s: %s" % [plan["target_name"], plan["outcome_text"]]
+			else:
+				apply_burn(float(plan["dv_arrival"]))
+				message = "Arrived at %s." % plan["target_name"]
+				if aero.get("enabled", false):
+					message += " " + _take_aerobraking_effects(aero)
 			plan = {}
 			warp_index = 0
 	_update_facilities()
@@ -210,7 +218,7 @@ static func _next_atmosphere_entry() -> float:
 	if plan.is_empty() or not plan["committed"]:
 		return -1.0
 	var aero: Dictionary = plan.get("aero", {})
-	if not aero.get("enabled", false) or not aero.get("valid", false):
+	if not aero.get("enabled", false):
 		return -1.0
 	for entry in aero["entry_times"]:
 		if float(entry) > time_jd:

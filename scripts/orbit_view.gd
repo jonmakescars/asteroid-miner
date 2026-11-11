@@ -61,6 +61,13 @@ var passes_slider: HSlider
 var passes_label: Label
 var altitude_slider: HSlider
 var altitude_label: Label
+var altitude_spin: SpinBox
+var altitude_minus: Button
+var altitude_plus: Button
+var altitude_dragging := false
+var orbit_row: HFlowContainer
+var orbit_control: OrbitControl
+var orbit_title: Label
 var planner_row: HFlowContainer
 var ops_row: HFlowContainer
 var syncing_aero := false
@@ -123,15 +130,44 @@ func _build_ui() -> void:
 	passes_slider.drag_ended.connect(func(_changed: bool) -> void: _on_passes_changed())
 	aero_row.add_child(passes_slider)
 	altitude_label = Label.new()
+	altitude_label.text = "Periapsis altitude:"
 	aero_row.add_child(altitude_label)
+	altitude_minus = _add_button(aero_row, "-", func() -> void: _nudge_altitude(-0.1))
 	altitude_slider = HSlider.new()
 	altitude_slider.step = 0.1
-	altitude_slider.custom_minimum_size = Vector2(160, 40)
+	altitude_slider.custom_minimum_size = Vector2(220, 40)
+	# The slider only covers a band around the current setting (see AeroBraking.BAND_KM); the number box
+	# takes any altitude. The aerobraking numbers are recalculated when the slider is released.
+	altitude_slider.drag_started.connect(func() -> void: altitude_dragging = true)
+	altitude_slider.drag_ended.connect(func(_changed: bool) -> void:
+		altitude_dragging = false
+		_apply_aero(aero_check.button_pressed, int(passes_slider.value), altitude_slider.value))
 	altitude_slider.value_changed.connect(func(value: float) -> void:
-		if not syncing_aero:
+		if syncing_aero:
+			return
+		altitude_label.text = "Periapsis altitude:"
+		if altitude_dragging:
+			altitude_spin.set_value_no_signal(value)
+		else:
 			_apply_aero(aero_check.button_pressed, int(passes_slider.value), value))
 	aero_row.add_child(altitude_slider)
+	altitude_plus = _add_button(aero_row, "+", func() -> void: _nudge_altitude(0.1))
+	altitude_spin = SpinBox.new()
+	altitude_spin.step = 0.1
+	altitude_spin.suffix = "km"
+	altitude_spin.custom_minimum_size = Vector2(120, 40)
+	altitude_spin.value_changed.connect(func(value: float) -> void:
+		if not syncing_aero:
+			_apply_aero(aero_check.button_pressed, int(passes_slider.value), value, true))
+	aero_row.add_child(altitude_spin)
 	_add_button(aero_row, "Auto", _on_aero_auto)
+	orbit_row = bar.add_row()
+	orbit_title = Label.new()
+	orbit_title.text = "Target orbit:"
+	orbit_row.add_child(orbit_title)
+	orbit_control = OrbitControl.new()
+	orbit_control.orbit_changed.connect(_on_target_orbit_changed)
+	orbit_row.add_child(orbit_control)
 	ops_row = bar.add_row()
 	refuel_button = _add_button(ops_row, "Refuel", _on_refuel)
 	buy_button = _add_button(ops_row, "Buy propellant", _on_buy)
@@ -216,11 +252,20 @@ func _on_target_changed() -> void:
 
 
 func _on_plan() -> void:
+	_make_plan(false)
+
+
+## Plans the next departure with the player's target orbit for the chosen destination. With keep_aero_off an
+## earlier decision to switch aerobraking off is kept.
+func _make_plan(keep_aero_off: bool) -> void:
 	var parked := GameState.parked_leg()
 	if parked.is_empty():
 		return
 	legs = [parked]
-	var result := MissionPlanner.make_plan(str(parked["parent"]), parked["segment"], _selected_target_id(), time_jd + MIN_LAUNCH_DELAY_DAYS)
+	var target_id := _selected_target_id()
+	var aero_was_off: bool = keep_aero_off and not plan.is_empty() and not bool(plan.get("aero", {}).get("enabled", false))
+	var result := MissionPlanner.make_plan(str(parked["parent"]), parked["segment"], target_id,
+			time_jd + MIN_LAUNCH_DELAY_DAYS, GameState.target_orbits.get(target_id, {}))
 	paused = true
 	if result.has("error"):
 		plan = {}
@@ -228,7 +273,27 @@ func _on_plan() -> void:
 	else:
 		plan = result
 		message = ""
+		if aero_was_off and plan["aero"]["available"]:
+			AeroBraking.apply(plan, false, int(plan["aero"]["n"]), float(plan["aero"]["h_km"]))
 		_sync_aero()
+		_sync_orbit_control()
+
+
+## The player changed the target orbit: remember it for this destination and plan again.
+func _on_target_orbit_changed(rp_alt_km: float, ra_alt_km: float, offset_deg: float) -> void:
+	if plan.is_empty() or plan["committed"]:
+		return
+	GameState.target_orbits[_selected_target_id()] = {"rp_alt_km": rp_alt_km, "ra_alt_km": ra_alt_km, "offset_deg": offset_deg}
+	_make_plan(true)
+
+
+func _sync_orbit_control() -> void:
+	if plan.is_empty():
+		return
+	var target: Dictionary = bodies[plan["target_id"]]
+	var orbit: Dictionary = plan["target_orbit"]
+	orbit_control.setup(float(target["radius_km"]), float(target["radius_km"]) * 100.0)
+	orbit_control.set_orbit(float(orbit["rp_alt_km"]), float(orbit["ra_alt_km"]), float(orbit["offset_deg"]))
 
 
 func _on_launch() -> void:
@@ -266,20 +331,35 @@ func _sync_aero() -> void:
 	syncing_aero = true
 	var aero: Dictionary = plan.get("aero", {})
 	if aero.get("available", false):
-		aero_check.set_pressed_no_signal(aero["enabled"])
+		var enabled: bool = aero["enabled"]
+		aero_check.set_pressed_no_signal(enabled)
 		passes_slider.set_value_no_signal(float(aero["n"]))
-		altitude_slider.min_value = float(aero["h_min_km"])
-		altitude_slider.max_value = float(aero["h_max_km"])
+		altitude_slider.min_value = float(aero["band_lo"])
+		altitude_slider.max_value = maxf(float(aero["band_hi"]), float(aero["band_lo"]) + 0.1)
 		altitude_slider.set_value_no_signal(float(aero["h_km"]))
+		altitude_spin.min_value = float(aero["h_min_km"])
+		altitude_spin.max_value = float(aero["h_max_km"])
+		altitude_spin.set_value_no_signal(float(aero["h_km"]))
 		passes_label.text = "Passes: %d" % int(aero["n"])
-		altitude_label.text = "Periapsis: %.1f km" % float(aero["h_km"])
+		# Without aerobraking the passes and the altitude do not apply: grey them out.
+		passes_slider.editable = enabled
+		altitude_slider.editable = enabled
+		altitude_spin.editable = enabled
+		altitude_minus.disabled = not enabled
+		altitude_plus.disabled = not enabled
+		passes_label.modulate = Color(1, 1, 1, 1.0 if enabled else 0.4)
+		altitude_label.modulate = passes_label.modulate
 	syncing_aero = false
 
 
-func _apply_aero(enabled: bool, passes: int, altitude_km: float) -> void:
+func _nudge_altitude(delta_km: float) -> void:
+	_apply_aero(aero_check.button_pressed, int(passes_slider.value), altitude_spin.value + delta_km, true)
+
+
+func _apply_aero(enabled: bool, passes: int, altitude_km: float, recenter := false) -> void:
 	if plan.is_empty() or plan["committed"]:
 		return
-	AeroBraking.apply(plan, enabled, passes, altitude_km)
+	AeroBraking.apply(plan, enabled, passes, clampf(altitude_km, float(plan["aero"]["h_min_km"]), float(plan["aero"]["h_max_km"])), recenter)
 	_sync_aero()
 
 
@@ -292,7 +372,7 @@ func _on_passes_changed() -> void:
 	if h < 0.0:
 		message = "%d passes cannot slow the ship enough, even at the lowest periapsis." % n
 		h = float(plan["aero"]["h_min_km"])
-	_apply_aero(true, n, h)
+	_apply_aero(true, n, h, true)
 
 
 ## Back to the planner's suggestion.
@@ -304,7 +384,7 @@ func _on_aero_auto() -> void:
 		message = "The planner has no safe aerobraking suggestion for this shield."
 		_apply_aero(false, int(passes_slider.value), altitude_slider.value)
 	else:
-		_apply_aero(true, int(suggestion["n"]), float(suggestion["h_km"]))
+		_apply_aero(true, int(suggestion["n"]), float(suggestion["h_km"]), true)
 
 
 func _on_buy() -> void:
@@ -378,9 +458,8 @@ func _update_ui() -> void:
 	var affordable := not plan.is_empty() and _plan_dv_total() <= GameState.dv_left_kms() + 0.00001
 	var window_open := not plan.is_empty() and time_jd < float(plan["t_dep"])
 	var funded := GameState.budget_eur >= GameState.mission_cost_eur
-	var aero_ok := plan.is_empty() or bool(plan.get("aero", {}).get("valid", true))
-	launch_button.disabled = plan.is_empty() or plan["committed"] or not affordable or not window_open or not funded or not aero_ok
-	skip_button.disabled = plan.is_empty() or not window_open or not affordable or (not funded and not plan["committed"]) or not aero_ok
+	launch_button.disabled = plan.is_empty() or plan["committed"] or not affordable or not window_open or not funded
+	skip_button.disabled = plan.is_empty() or not window_open or not affordable or (not funded and not plan["committed"])
 	skip_button.text = "Skip to Departure" if not plan.is_empty() and plan["committed"] else "Skip to Departure & Launch"
 	var ship_body := GameState.ship_body()
 	var plant: Dictionary = GameState.facility_of_kind(ship_body, "propellant_plant") if ship_body != "" else {}
@@ -399,6 +478,7 @@ func _update_ui() -> void:
 	ops_row.visible = true
 	aero_row.visible = planner_row.visible and not plan.is_empty() and not plan["committed"] \
 			and bool(plan.get("aero", {}).get("available", false))
+	orbit_row.visible = planner_row.visible and not plan.is_empty() and not plan["committed"]
 	shield_button.visible = at_yard and GameState.shield_used_mj_m2 > 0.0
 	shield_button.disabled = GameState.shield_replace_problem() != ""
 	bar.set_design_visible(GameState.design_available(frame_id))
@@ -425,21 +505,29 @@ func _aero_lines() -> PackedStringArray:
 	if not aero.get("available", false):
 		if aero.get("message", "") != "":
 			lines.append(str(aero["message"]))
-		return lines
-	if not aero["enabled"]:
+	elif not aero["enabled"]:
 		lines.append("Aerobraking off: propulsive capture. %s" % aero.get("message", ""))
-		return lines
-	if not aero["valid"]:
-		lines.append(str(aero["message"]))
-		return lines
-	lines.append("Aerobraking: %d passes at %.1f km, %s in total, final burns %.0f m/s" % [
-			int(aero["n"]), float(aero["h_km"]), _span_text(float(aero["days"])), float(aero["final_dv"]) * 1000.0])
-	lines.append("Heat %.0f MJ/m2 = %.0f%% of the shield left | peak %.1f g | peak heating %.1f MW/m2" % [
-			float(aero["heat"]), float(aero["shield_share"]) * 100.0, float(aero["peak_g"]), float(aero["peak_flux"])])
-	if float(aero["shield_share"]) > 1.0 or float(aero["peak_g"]) > AeroBraking.G_LIMIT:
-		lines.append("Warning: the ship will be damaged.")
-	elif float(aero["shield_share"]) > AeroBraking.HEAT_MARGIN:
-		lines.append("The shield is nearly used up.")
+	elif aero["outcome"] != "ok":
+		lines.append("Aerobraking: %d passes at %.1f km. Heat %.0f MJ/m2" % [int(aero["n"]), float(aero["h_km"]), float(aero["heat"])])
+	else:
+		lines.append("Aerobraking: %d passes at %.1f km, %s in total, final burns %.0f m/s" % [
+				int(aero["n"]), float(aero["h_km"]), _span_text(float(aero["days"])), float(aero["final_dv"]) * 1000.0])
+		lines.append("Heat %.0f MJ/m2 | peak %.1f g | peak heating %.1f MW/m2" % [
+				float(aero["heat"]), float(aero["peak_g"]), float(aero["peak_flux"])])
+	if aero.get("enabled", false) and aero.has("shield_after"):
+		lines.append("Heat shield capacity: %.0f%% now, %.0f%% after the passes" % [
+				float(aero["shield_before"]) * 100.0, float(aero["shield_after"]) * 100.0])
+		if aero["outcome"] == "ok":
+			if float(aero["shield_after"]) <= 0.0 or float(aero["heat"]) > float(aero["shield_before"]) * AeroBraking.shield_capacity_mj_m2(GameState.ship_shield_cm):
+				lines.append("Warning: the heat shield will be used up and the ship will be damaged.")
+			elif float(aero["peak_g"]) > AeroBraking.G_LIMIT:
+				lines.append("Warning: the deceleration is above the limit and the ship will be damaged.")
+			elif float(aero["heat"]) > AeroBraking.HEAT_MARGIN * float(aero["shield_before"]) * AeroBraking.shield_capacity_mj_m2(GameState.ship_shield_cm):
+				lines.append("The shield is nearly used up.")
+	if str(plan.get("outcome", "ok")) != "ok":
+		lines.append("Warning: " + str(plan["outcome_text"]))
+	if str(plan.get("warning", "")) != "":
+		lines.append("Warning: " + str(plan["warning"]))
 	return lines
 
 
@@ -478,6 +566,8 @@ func _info_text() -> String:
 		lines.append("Launch cost: %s EUR" % GameState.thousands(GameState.mission_cost_eur))
 	lines.append("Burns: departure %.2f + capture %.2f = %.2f km/s" % [
 			float(plan["dv_departure"]), float(plan["dv_arrival"]), _plan_dv_total()])
+	if float(plan.get("dv_circularize", 0.0)) > 0.0:
+		lines.append("The periapsis of the parking orbit points the wrong way for this departure: circularising first (%.0f m/s, included in the departure burn)." % (float(plan["dv_circularize"]) * 1000.0))
 	lines.append_array(_aero_lines())
 	if message != "":
 		lines.append(message)

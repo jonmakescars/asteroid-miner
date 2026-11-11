@@ -168,6 +168,19 @@ static func departure_dv_escape(transfer: Dictionary, origin_velocity: Vector2, 
 	return sqrt(v_inf * v_inf + 2.0 * v_circular * v_circular) - v_circular
 
 
+## Direction (degrees) the periapsis of the ship's orbit around the origin body must have to leave onto the
+## transfer: the escape hyperbola's outgoing asymptote is turned by the true anomaly acos(-1/e) from its
+## periapsis (the orbits run counter-clockwise). Used with departure_dv_escape.
+static func escape_axis_deg(transfer: Dictionary, origin_velocity: Vector2, body_gm: float, periapsis_radius_km: float) -> float:
+	var r1 := float(transfer["r1"])
+	var v_departure := sqrt(float(transfer["gm"]) * (2.0 / r1 - 1.0 / float(transfer["a"])))
+	var direction := (transfer["origin"] as Vector2).normalized().rotated(PI / 2.0)
+	var v_inf_vector := direction * v_departure - origin_velocity
+	var v_inf := v_inf_vector.length()
+	var e := 1.0 + periapsis_radius_km * v_inf * v_inf / body_gm
+	return rad_to_deg(v_inf_vector.angle() - acos(-1.0 / e))
+
+
 ## Burn from a parking orbit around a moon to a transfer around the Sun (the moon's planet is the
 ## origin of the transfer). Estimate in two steps: the excess speed needed relative to the planet, then
 ## the burn that gives the ship that speed from the moon's orbit, assuming the best direction. The
@@ -205,3 +218,13 @@ static func arrival_dv_central(transfer: Dictionary) -> float:
 	var r2 := float(transfer["r2"])
 	var gm := float(transfer["gm"])
 	return absf(sqrt(gm * (2.0 / r2 - 1.0 / float(transfer["a"]))) - sqrt(gm / r2))
+
+
+## Burn (km/s) that puts a ship arriving with the specific energy energy (km2/s2, relative to the body: half
+## the hyperbolic excess speed squared, or negative for an arrival on a bound orbit) into the orbit with the
+## periapsis radius rp and the apoapsis radius ra. The burn is made at the periapsis of the target orbit; the
+## orientation of the orbit is not part of the cost. For a circular orbit this is the usual capture burn.
+static func capture_dv(gm: float, energy: float, rp: float, ra: float) -> float:
+	var arrival_speed := sqrt(maxf(2.0 * (energy + gm / rp), 0.0))
+	var orbit_speed := sqrt(2.0 * gm * ra / (rp * (rp + ra)))
+	return absf(arrival_speed - orbit_speed)
