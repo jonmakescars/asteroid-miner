@@ -53,6 +53,7 @@ var launch_button: Button
 var skip_button: Button
 var refuel_button: Button
 var deploy_button: Button
+var buy_button: Button
 var planner_row: HFlowContainer
 var ops_row: HFlowContainer
 var kit_buttons: Dictionary = {}   # facility type id -> button
@@ -96,6 +97,7 @@ func _build_ui() -> void:
 	skip_button = _add_button(row, "Skip to Departure & Launch", _on_skip)
 	ops_row = bar.add_row()
 	refuel_button = _add_button(ops_row, "Refuel", _on_refuel)
+	buy_button = _add_button(ops_row, "Buy propellant", _on_buy)
 	for type_id in GameState.kit_type_ids():
 		var id: String = type_id
 		var kit_button := _add_button(ops_row, "Load %s kit" % str(GameState.facility_types[id]["name"]).to_lower(),
@@ -193,6 +195,7 @@ func _on_plan() -> void:
 func _on_launch() -> void:
 	if plan.is_empty():
 		return
+	GameState.budget_eur -= GameState.mission_cost_eur
 	plan["committed"] = true
 	legs = [
 		legs[0],
@@ -218,6 +221,12 @@ func _on_skip() -> void:
 func _on_refuel() -> void:
 	var amount := GameState.refuel()
 	message = "Refuelled %s kg." % GameState.thousands(amount) if amount > 0.0 else "Nothing to refuel."
+
+
+func _on_buy() -> void:
+	var amount := GameState.buy_propellant()
+	message = "Bought %s kg of propellant for %s EUR." % [GameState.thousands(amount),
+			GameState.thousands(amount * GameState.propellant_price_eur_per_kg)] if amount > 0.0 else "Nothing to buy."
 
 
 func _on_deploy() -> void:
@@ -284,8 +293,9 @@ func _update_ui() -> void:
 	target_picker.disabled = in_transit
 	var affordable := not plan.is_empty() and _plan_dv_total() <= GameState.dv_left_kms() + 0.00001
 	var window_open := not plan.is_empty() and time_jd < float(plan["t_dep"])
-	launch_button.disabled = plan.is_empty() or plan["committed"] or not affordable or not window_open
-	skip_button.disabled = plan.is_empty() or not window_open or not affordable
+	var funded := GameState.budget_eur >= GameState.mission_cost_eur
+	launch_button.disabled = plan.is_empty() or plan["committed"] or not affordable or not window_open or not funded
+	skip_button.disabled = plan.is_empty() or not window_open or not affordable or (not funded and not plan["committed"])
 	skip_button.text = "Skip to Departure" if not plan.is_empty() and plan["committed"] else "Skip to Departure & Launch"
 	var ship_body := GameState.ship_body()
 	var plant: Dictionary = GameState.facility_of_kind(ship_body, "propellant_plant") if ship_body != "" else {}
@@ -293,6 +303,8 @@ func _update_ui() -> void:
 	refuel_button.disabled = float(plant.get("stock_kg", 0.0)) <= 0.0 \
 			or GameState.ship_fuel_kg >= GameState.ship_fuel_capacity_kg - 0.001
 	var at_yard := ship_body != "" and not GameState.facility_of_kind(ship_body, "shipyard").is_empty()
+	buy_button.visible = at_yard
+	buy_button.disabled = GameState.ship_fuel_kg >= GameState.ship_fuel_capacity_kg - 0.001 or GameState.budget_eur <= 0.0
 	for type_id in kit_buttons:
 		kit_buttons[type_id].visible = at_yard
 		kit_buttons[type_id].disabled = GameState.kit_load_problem(type_id) != ""
@@ -347,6 +359,8 @@ func _info_text() -> String:
 	lines.append("Plan: %s to %s" % [bodies[plan["origin_id"]]["name"], plan["target_name"]])
 	lines.append("Departure: %s (in %s)" % [GameState.date_text(float(plan["t_dep"])), _span_text(float(plan["t_dep"]) - time_jd)])
 	lines.append("Arrival: %s (flight %s)" % [GameState.date_text(float(plan["t_arr"])), _span_text(float(plan["flight_days"]))])
+	if not plan["committed"]:
+		lines.append("Launch cost: %s EUR" % GameState.thousands(GameState.mission_cost_eur))
 	lines.append("Burns: departure %.2f + capture %.2f = %.2f km/s" % [
 			float(plan["dv_departure"]), float(plan["dv_arrival"]), _plan_dv_total()])
 	if message != "":

@@ -22,6 +22,8 @@ static var children: Dictionary = {}        # id -> array of child ids
 static var facility_types: Dictionary = {}  # id -> facility type dictionary
 static var start_facilities: Array = []
 static var start_budget_eur := 0.0
+static var propellant_price_eur_per_kg := 0.0
+static var mission_cost_eur := 0.0
 static var start_jd := 0.0
 
 # Game clock.
@@ -85,6 +87,8 @@ static func load_data() -> bool:
 		if typeof(settings) == TYPE_DICTIONARY:
 			start_budget_eur = float(settings["start_budget_eur"])
 			start_facilities = settings["start_facilities"]
+			propellant_price_eur_per_kg = float(settings.get("propellant_price_eur_per_kg", 0.0))
+			mission_cost_eur = float(settings.get("mission_cost_eur", 0.0))
 		data_loaded = true
 	if not initialized:
 		reset_mission()
@@ -309,6 +313,18 @@ static func refuel() -> float:
 	if amount <= 0.0:
 		return 0.0
 	facility["stock_kg"] = float(facility["stock_kg"]) - amount
+	ship_fuel_kg += amount
+	return amount
+
+
+## Buys propellant at a shipyard until the tanks are full or the budget runs out. Returns the kg bought.
+static func buy_propellant() -> float:
+	if facility_of_kind(ship_body(), "shipyard").is_empty() or propellant_price_eur_per_kg <= 0.0:
+		return 0.0
+	var amount := minf(ship_fuel_capacity_kg - ship_fuel_kg, budget_eur / propellant_price_eur_per_kg)
+	if amount <= 0.0:
+		return 0.0
+	budget_eur -= amount * propellant_price_eur_per_kg
 	ship_fuel_kg += amount
 	return amount
 
