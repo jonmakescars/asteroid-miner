@@ -10,6 +10,7 @@ extends Control
 ## (or use "Skip to Departure") and watch the ship follow its orbit legs.
 
 const SKIP_LEAD_DAYS := 120.0 / 86400.0  # "skip to departure" stops two minutes before the burn
+const LATE_LAUNCH_DAYS := 300.0 / 86400.0  # a plan can still be launched this long after its departure time
 const MIN_LAUNCH_DELAY_DAYS := 10.0 / 86400.0  # a plan never starts earlier than this after "now"
 const MIN_BODY_RADIUS_PX := 3.0
 const RING_RADIUS_PX := 10.0
@@ -50,6 +51,10 @@ var info_label: Label
 var target_picker: OptionButton
 var plan_button: Button
 var launch_button: Button
+var abort_button: Button
+var keep_button: Button
+var warning_label: Label
+var launch_dialog: ConfirmationDialog
 var skip_button: Button
 var refuel_button: Button
 var deploy_button: Button
@@ -110,6 +115,13 @@ func _build_ui() -> void:
 	plan_button = _add_button(row, "Plan", _on_plan)
 	launch_button = _add_button(row, "Launch", _on_launch)
 	skip_button = _add_button(row, "Skip to Departure & Launch", _on_skip)
+	abort_button = _add_button(row, "Abort launch", _on_abort)
+	keep_button = _add_button(row, "Keep current course", _on_keep_course)
+	launch_dialog = ConfirmationDialog.new()
+	launch_dialog.title = "Warning"
+	launch_dialog.ok_button_text = "Launch anyway"
+	launch_dialog.cancel_button_text = "Back to planning"
+	add_child(launch_dialog)
 	aero_row = bar.add_row()
 	aero_check = CheckButton.new()
 	aero_check.text = "Aerobrake"
@@ -180,6 +192,11 @@ func _build_ui() -> void:
 	deploy_button = _add_button(ops_row, "Deploy", _on_deploy)
 	_add_button(ops_row, "Reset game", _on_reset)
 
+	warning_label = Label.new()
+	warning_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	warning_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	warning_label.add_theme_color_override("font_color", Color(1.0, 0.55, 0.3))
+	bar.box.add_child(warning_label)
 	info_label = Label.new()
 	info_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	info_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
@@ -229,46 +246,77 @@ func _selected_target_id() -> String:
 	return destination_ids[target_picker.selected]
 
 
-## Fills the destination picker for the body the ship is at; keeps the previous choice if still offered.
+## What the destination picker was filled for: the body the ship is orbiting, or the body it is flying around.
+func _picker_key() -> String:
+	var body := GameState.ship_body()
+	return body if body != "" else "flight:" + GameState.ship_frame()
+
+
+## Fills the destination picker (the bodies near the ship's orbit, or the bodies it can be redirected to in
+## flight); keeps the previous choice if still offered.
 func _fill_destinations(keep_id: String) -> void:
-	picker_origin = GameState.ship_body()
+	picker_origin = _picker_key()
 	target_picker.clear()
 	destination_ids = []
-	if picker_origin == "":
-		return
-	destination_ids = MissionPlanner.destinations(picker_origin)
+	if GameState.ship_body() != "":
+		destination_ids = MissionPlanner.destinations(GameState.ship_body())
+	else:
+		destination_ids = CourseChange.destinations()
+	var here := GameState.ship_body() if GameState.ship_body() != "" else GameState.ship_frame()
 	for id in destination_ids:
-		target_picker.add_item("To " + str(bodies[id]["name"]))
+		target_picker.add_item(("Orbit around " if id == here else "To ") + str(bodies[id]["name"]))
 	var index := destination_ids.find(keep_id)
 	target_picker.select(maxi(index, 0))
 
 
 func _on_target_changed() -> void:
 	if GameState.ship_in_transit():
+		_on_keep_course()
 		return
 	legs = [GameState.parked_leg()]
 	plan = {}
 	message = ""
 
 
+## Drops the draft of a course change: the ship keeps the plan it is following.
+func _on_keep_course() -> void:
+	if not GameState.saved_plan.is_empty():
+		plan = GameState.saved_plan
+		GameState.saved_plan = {}
+		_sync_aero()
+		message = "Keeping the current course."
+
+
 func _on_plan() -> void:
+	# A new orbit around the body the ship is at starts from the current orbit, not from an earlier choice.
+	var here := GameState.ship_body() if GameState.ship_body() != "" else GameState.ship_frame()
+	if _selected_target_id() == here and not GameState.ship_in_transit():
+		GameState.target_orbits.erase(here)
 	_make_plan(false)
 
 
 ## Plans the next departure with the player's target orbit for the chosen destination. With keep_aero_off an
 ## earlier decision to switch aerobraking off is kept.
 func _make_plan(keep_aero_off: bool) -> void:
-	var parked := GameState.parked_leg()
-	if parked.is_empty():
-		return
-	legs = [parked]
 	var target_id := _selected_target_id()
 	var aero_was_off: bool = keep_aero_off and not plan.is_empty() and not bool(plan.get("aero", {}).get("enabled", false))
-	var result := MissionPlanner.make_plan(str(parked["parent"]), parked["segment"], target_id,
-			time_jd + MIN_LAUNCH_DELAY_DAYS, GameState.target_orbits.get(target_id, {}))
+	var result: Dictionary
+	if GameState.ship_in_transit():
+		# A course change: the plan the ship is following stays saved until the new one is launched.
+		if GameState.saved_plan.is_empty() and not plan.is_empty() and plan["committed"]:
+			GameState.saved_plan = plan
+		result = CourseChange.make_plan(target_id, time_jd + MIN_LAUNCH_DELAY_DAYS, GameState.target_orbits.get(target_id, {}))
+	else:
+		var parked := GameState.parked_leg()
+		if parked.is_empty():
+			return
+		legs = [parked]
+		result = MissionPlanner.make_plan(str(parked["parent"]), parked["segment"], target_id,
+				time_jd + MIN_LAUNCH_DELAY_DAYS, GameState.target_orbits.get(target_id, {}))
 	paused = true
 	if result.has("error"):
-		plan = {}
+		plan = GameState.saved_plan if not GameState.saved_plan.is_empty() else {}
+		GameState.saved_plan = {}
 		message = str(result["error"])
 	else:
 		plan = result
@@ -296,16 +344,65 @@ func _sync_orbit_control() -> void:
 	orbit_control.set_orbit(float(orbit["rp_alt_km"]), float(orbit["ra_alt_km"]), float(orbit["offset_deg"]))
 
 
+## Launches; if the plan will end badly (crash, burn-up, too slow, escape) the player must confirm first.
 func _on_launch() -> void:
+	_confirm_then(_do_launch)
+
+
+func _confirm_then(action: Callable) -> void:
 	if plan.is_empty():
 		return
-	GameState.budget_eur -= GameState.mission_cost_eur
+	if plan["committed"] or str(plan.get("outcome", "ok")) == "ok":
+		action.call()
+		return
+	for connection in launch_dialog.confirmed.get_connections():
+		launch_dialog.confirmed.disconnect(connection["callable"])
+	launch_dialog.dialog_text = "%s\n\nLaunch anyway?" % str(plan["outcome_text"])
+	launch_dialog.confirmed.connect(action)
+	launch_dialog.popup_centered(Vector2i(520, 220))
+
+
+## Stops a launch before the departure burn. The plan stays as it is, the launch cost is refunded, and the
+## planner controls come back, so the player can change what they want and launch again. For a course change
+## the ship goes back to the plan it was following.
+func _on_abort() -> void:
+	if plan.is_empty() or not plan["committed"] or plan["departure_done"]:
+		return
+	plan["committed"] = false
+	paused = true
+	warp_index = 0
+	if plan.get("midflight", false):
+		legs = plan["legs_before"]
+		GameState.saved_plan = plan["replaces"]
+	else:
+		GameState.budget_eur += GameState.mission_cost_eur
+		legs = [legs[0]]
+	_sync_aero()
+	_sync_orbit_control()
+	message = "Launch aborted. The plan is unchanged: change what you like and press Launch again."
+
+
+func _do_launch() -> void:
+	if plan.is_empty():
+		return
+	var transfer_leg := {"parent": plan["frame"], "segment": plan["transfer_segment"], "t_start": plan["t_dep"],
+			"label": ("Orbit change around %s" if plan.get("orbit_change", false) else "Transfer orbit to %s") % plan["target_name"],
+			"kind": "transfer"}
 	plan["committed"] = true
-	legs = [
-		legs[0],
-		{"parent": plan["frame"], "segment": plan["transfer_segment"], "t_start": plan["t_dep"],
-				"label": "Transfer orbit to %s" % plan["target_name"], "kind": "transfer"},
-	]
+	if plan.get("midflight", false):
+		# A course change: the flight so far stays, the old plan's later legs are replaced. No launch cost.
+		plan["legs_before"] = legs.duplicate()
+		plan["replaces"] = GameState.saved_plan
+		GameState.saved_plan = {}
+		var kept: Array = []
+		for leg in legs:
+			if float(leg["t_start"]) < float(plan["t_dep"]):
+				kept.append(leg)
+		legs = kept
+		legs.append(transfer_leg)
+	else:
+		GameState.budget_eur -= GameState.mission_cost_eur
+		legs = [legs[0], transfer_leg]
 	legs.append_array(plan["capture_legs"])
 
 
@@ -315,7 +412,14 @@ func _on_skip() -> void:
 	if plan.is_empty():
 		return
 	if not plan["committed"]:
-		_on_launch()
+		_confirm_then(func() -> void:
+			_do_launch()
+			_skip_to_departure())
+		return
+	_skip_to_departure()
+
+
+func _skip_to_departure() -> void:
 	time_jd = maxf(time_jd, float(plan["t_dep"]) - SKIP_LEAD_DAYS)
 	paused = false
 	warp_index = 0
@@ -445,7 +549,7 @@ func _frame_id() -> String:
 
 func _process(delta: float) -> void:
 	GameState.advance(delta)
-	if picker_origin != GameState.ship_body():
+	if picker_origin != _picker_key():
 		_fill_destinations(_selected_target_id())
 	_update_ui()
 	queue_redraw()
@@ -453,13 +557,24 @@ func _process(delta: float) -> void:
 
 func _update_ui() -> void:
 	var in_transit := _in_transit()
-	plan_button.disabled = in_transit or destination_ids.is_empty()
-	target_picker.disabled = in_transit
+	var burn_pending: bool = not plan.is_empty() and plan["committed"] and not plan["departure_done"]
+	plan_button.disabled = destination_ids.is_empty() or burn_pending
+	target_picker.disabled = destination_ids.is_empty() or burn_pending
+	keep_button.visible = not GameState.saved_plan.is_empty()
+	var draft_bad: bool = not plan.is_empty() and not plan["committed"] and str(plan.get("outcome", "ok")) != "ok"
+	var warnings: PackedStringArray = []
+	if draft_bad:
+		warnings.append(str(plan["outcome_text"]))
+	if not plan.is_empty() and not plan["committed"] and str(plan.get("warning", "")) != "":
+		warnings.append(str(plan["warning"]))
+	warning_label.text = "Warning: " + "\nWarning: ".join(warnings) if not warnings.is_empty() else ""
+	warning_label.visible = not warnings.is_empty()
 	var affordable := not plan.is_empty() and _plan_dv_total() <= GameState.dv_left_kms() + 0.00001
-	var window_open := not plan.is_empty() and time_jd < float(plan["t_dep"])
-	var funded := GameState.budget_eur >= GameState.mission_cost_eur
+	var window_open := not plan.is_empty() and time_jd < float(plan["t_dep"]) + LATE_LAUNCH_DAYS
+	var funded: bool = GameState.budget_eur >= GameState.mission_cost_eur or (not plan.is_empty() and plan.get("midflight", false))
 	launch_button.disabled = plan.is_empty() or plan["committed"] or not affordable or not window_open or not funded
 	skip_button.disabled = plan.is_empty() or not window_open or not affordable or (not funded and not plan["committed"])
+	abort_button.visible = not plan.is_empty() and plan["committed"] and not plan["departure_done"]
 	skip_button.text = "Skip to Departure" if not plan.is_empty() and plan["committed"] else "Skip to Departure & Launch"
 	var ship_body := GameState.ship_body()
 	var plant: Dictionary = GameState.facility_of_kind(ship_body, "propellant_plant") if ship_body != "" else {}
@@ -559,10 +674,15 @@ func _info_text() -> String:
 		elif planner_row.visible:
 			lines.append("Choose a destination and press Plan to find the next launch window.")
 		return "\n".join(lines)
-	lines.append("Plan: %s to %s" % [bodies[plan["origin_id"]]["name"], plan["target_name"]])
+	if plan.get("orbit_change", false):
+		lines.append("Plan: new orbit around %s" % plan["target_name"])
+	elif plan.get("midflight", false):
+		lines.append("Plan: course change to %s" % plan["target_name"])
+	else:
+		lines.append("Plan: %s to %s" % [bodies[plan["origin_id"]]["name"], plan["target_name"]])
 	lines.append("Departure: %s (in %s)" % [GameState.date_text(float(plan["t_dep"])), _span_text(float(plan["t_dep"]) - time_jd)])
 	lines.append("Arrival: %s (flight %s)" % [GameState.date_text(float(plan["t_arr"])), _span_text(float(plan["flight_days"]))])
-	if not plan["committed"]:
+	if not plan["committed"] and not plan.get("midflight", false):
 		lines.append("Launch cost: %s EUR" % GameState.thousands(GameState.mission_cost_eur))
 	lines.append("Burns: departure %.2f + capture %.2f = %.2f km/s" % [
 			float(plan["dv_departure"]), float(plan["dv_arrival"]), _plan_dv_total()])
@@ -574,8 +694,8 @@ func _info_text() -> String:
 	if not plan["committed"] and _plan_dv_total() > GameState.dv_left_kms():
 		lines.append("Not enough fuel for this mission. Refuel, or build a stronger ship on the ship design screen.")
 	elif plan["committed"]:
-		lines.append("Mission launched." if time_jd < float(plan["t_arr"]) else "Arrived at %s." % plan["target_name"])
-	elif time_jd >= float(plan["t_dep"]):
+		lines.append(("Mission launched (the departure burn can still be aborted)." if not plan["departure_done"] else "Mission launched.") if time_jd < float(plan["t_arr"]) else "Arrived at %s." % plan["target_name"])
+	elif time_jd >= float(plan["t_dep"]) + LATE_LAUNCH_DAYS:
 		lines.append("The launch window has passed. Press Plan again.")
 	else:
 		lines.append("Ready: press Launch and resume time, or press Skip to Departure & Launch.")

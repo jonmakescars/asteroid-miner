@@ -16,7 +16,7 @@ const AXIS_TOLERANCE_DEG := 10.0      # a departure from an elliptical orbit may
 static func destinations(origin_id: String) -> Array:
 	var bodies := GameState.bodies
 	var children := GameState.children
-	var result: Array = []
+	var result: Array = [origin_id]   # a new orbit around the body the ship is at
 	for id in children[origin_id]:
 		result.append(id)
 	var origin_parent: Variant = bodies[origin_id]["parent"]
@@ -55,6 +55,9 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 	var origin_circular := OrbitControl.is_circular(origin_orbit_radius, origin_apoapsis)
 	var dv_circularize := 0.0
 	var orbit := default_target_orbit(target_id)
+	if target_id == origin_id:   # changing the orbit around the body the ship is at: start from the current orbit
+		orbit = {"rp_alt_km": origin_orbit_radius - float(target["radius_km"]),
+				"ra_alt_km": origin_apoapsis - float(target["radius_km"]), "offset_deg": 0.0}
 	orbit.merge(target_orbit, true)
 	var pair := OrbitControl.normalise(float(orbit["rp_alt_km"]), float(orbit["ra_alt_km"]), "rp")
 	orbit["rp_alt_km"] = pair.x
@@ -63,6 +66,8 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 	var ra_t := float(target["radius_km"]) + pair.y
 	var capture_radius := maxf(rp_t, 1.0)   # the arrival radius of a transfer to the central body
 	var arrival_energy := 0.0
+	if target_id == origin_id:
+		return _plan_orbit_change(origin_id, orbit_segment, t_start, orbit, rp_t, ra_t)
 	var target_fn := func(t: float) -> Vector2: return GameState.body_rel(target_id, t)
 
 	var frame := ""
@@ -180,6 +185,71 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 		"dv_capture": dv_arrival,
 	}
 	AeroBraking.setup_plan(plan)   # adds the aerobraking data and the capture legs
+	return plan
+
+
+## A change of the ship's orbit around the body it is at (a new periapsis, apoapsis and axis): two burns at the
+## apsides of the current orbit, as in AeroBraking.final_dv. The first burn waits for the apsis it needs.
+static func _plan_orbit_change(body_id: String, segment: Dictionary, t_start: float, orbit: Dictionary,
+		rp_t: float, ra_t: float) -> Dictionary:
+	var body: Dictionary = GameState.bodies[body_id]
+	var gm := float(body["gm_km3_s2"])
+	var a := float(segment["semi_major_axis_km"])
+	var e := float(segment["eccentricity"])
+	var rp := a * (1.0 - e)
+	var ra := a * (1.0 + e)
+	var axis := float(segment["argument_of_periapsis_deg"])
+	var circular := OrbitControl.is_circular(rp, ra)
+	var raise_apoapsis_first := ra < rp_t   # then burn at the periapsis, otherwise at the apoapsis
+	var t_burn := t_start
+	if not circular:
+		var target_anomaly := 0.0 if raise_apoapsis_first else 180.0
+		var anomaly := float(segment["mean_anomaly_deg"]) + float(segment["mean_motion_deg_per_day"]) * (t_start - float(segment["epoch_jd"]))
+		t_burn = t_start + fposmod(target_anomaly - anomaly, 360.0) / float(segment["mean_motion_deg_per_day"])
+	var middle_rp := rp if raise_apoapsis_first else rp_t
+	var middle_ra := ra_t if raise_apoapsis_first else ra
+	var middle := AeroBraking._ellipse(gm, middle_rp, middle_ra, t_burn, axis, 0.0 if raise_apoapsis_first else 180.0)
+	var half_days := TAU * sqrt(pow(0.5 * (middle_rp + middle_ra), 3.0) / gm) / 86400.0 * 0.5
+	var dv_first: float
+	var dv_second: float
+	if raise_apoapsis_first:
+		dv_first = absf(AeroBraking._speed_at_periapsis(gm, rp, ra_t) - AeroBraking._speed_at_periapsis(gm, rp, ra))
+		dv_second = absf(AeroBraking._speed_at_apoapsis(gm, rp_t, ra_t) - AeroBraking._speed_at_apoapsis(gm, rp, ra_t))
+	else:
+		dv_first = absf(AeroBraking._speed_at_apoapsis(gm, rp_t, ra) - AeroBraking._speed_at_apoapsis(gm, rp, ra))
+		dv_second = absf(AeroBraking._speed_at_periapsis(gm, rp_t, ra_t) - AeroBraking._speed_at_periapsis(gm, rp_t, ra))
+	var plan := {
+		"origin_id": body_id,
+		"target_id": body_id,
+		"target_name": body["name"],
+		"frame": body_id,
+		"t_dep": t_burn,
+		"t_arr": t_burn + half_days,
+		"flight_days": half_days,
+		"dv_departure": dv_first,
+		"dv_arrival": dv_second,
+		"transfer_segment": middle,
+		"committed": false,
+		"departure_done": false,
+		"arrival_seen": false,
+		"target_orbit": orbit,
+		"rp_t": rp_t,
+		"ra_t": ra_t,
+		"offset_deg": float(orbit["offset_deg"]),
+		"aimable": false,
+		"dv_circularize": 0.0,
+		"arrival_energy": -gm / (2.0 * a),
+		"capture_phase_deg": axis,
+		"gm_target": gm,
+		"dv_capture": dv_second,
+		"orbit_change": true,
+	}
+	# An orbit change never uses aerobraking, and its capture is the second burn at the other apsis.
+	plan["aero"] = {"available": false, "enabled": false, "outcome": "ok", "message": ""}
+	AeroBraking._use_propulsive_capture(plan)
+	var final_anomaly := 180.0 if raise_apoapsis_first else 0.0
+	plan["capture_legs"][0]["segment"] = AeroBraking._ellipse(gm, rp_t, ra_t, float(plan["t_arr"]),
+			AeroBraking._axis_deg(plan), final_anomaly)
 	return plan
 
 

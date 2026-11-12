@@ -39,6 +39,8 @@ static var warp_index := 0
 # The first leg is the orbit the ship is in when the mission is planned.
 static var legs: Array = []
 static var plan: Dictionary = {}
+## While the player plans a course change in flight, plan is the draft and this is the plan that keeps running.
+static var saved_plan: Dictionary = {}
 ## The target orbit the player chose for each destination body: {rp_alt_km, ra_alt_km, offset_deg}.
 static var target_orbits: Dictionary = {}
 static var message := ""
@@ -116,6 +118,7 @@ static func reset_mission() -> void:
 	paused = true
 	warp_index = 0
 	plan = {}
+	saved_plan = {}
 	target_orbits = {}
 	message = ""
 	cargo = []
@@ -193,31 +196,44 @@ static func advance(delta: float) -> void:
 			warp_index = AERO_WARP_INDEX
 			step = delta * float(WARP_STEPS[warp_index])
 		time_jd += step
-	if not plan.is_empty() and plan["committed"]:
-		if not plan["departure_done"] and time_jd >= float(plan["t_dep"]):
-			plan["departure_done"] = true
-			apply_burn(float(plan["dv_departure"]))
-		if time_jd >= float(plan.get("t_end", plan["t_arr"])):
-			var aero: Dictionary = plan.get("aero", {})
-			if str(plan.get("outcome", "ok")) != "ok":
+	var running := running_plan()
+	if not running.is_empty() and running["committed"]:
+		if not running["departure_done"] and time_jd >= float(running["t_dep"]):
+			running["departure_done"] = true
+			apply_burn(float(running["dv_departure"]))
+		if time_jd >= float(running.get("t_end", running["t_arr"])):
+			var aero: Dictionary = running.get("aero", {})
+			if str(running.get("outcome", "ok")) != "ok":
 				# The planner only warned about this; now it happens. (Placeholder rules: the ship is wrecked.)
 				ship_health = 0.0
-				message = "Ship lost near %s: %s" % [plan["target_name"], plan["outcome_text"]]
+				message = "Ship lost near %s: %s" % [running["target_name"], running["outcome_text"]]
 			else:
-				apply_burn(float(plan["dv_arrival"]))
-				message = "Arrived at %s." % plan["target_name"]
+				apply_burn(float(running["dv_arrival"]))
+				message = "Arrived at %s." % running["target_name"]
 				if aero.get("enabled", false):
 					message += " " + _take_aerobraking_effects(aero)
 			plan = {}
+			saved_plan = {}
 			warp_index = 0
 	_update_facilities()
 
 
+## The plan the ship is actually following: the saved one while a course change is being drafted.
+static func running_plan() -> Dictionary:
+	return saved_plan if not saved_plan.is_empty() else plan
+
+
+## The body the ship is flying around or orbiting (the parent of its current leg).
+static func ship_frame() -> String:
+	return str(legs[leg_index_at(time_jd)]["parent"])
+
+
 ## The next time (jd) the committed ship reaches the upper atmosphere, or -1.
 static func _next_atmosphere_entry() -> float:
-	if plan.is_empty() or not plan["committed"]:
+	var running := running_plan()
+	if running.is_empty() or not running["committed"]:
 		return -1.0
-	var aero: Dictionary = plan.get("aero", {})
+	var aero: Dictionary = running.get("aero", {})
 	if not aero.get("enabled", false):
 		return -1.0
 	for entry in aero["entry_times"]:
@@ -355,7 +371,7 @@ static func ship_in_transit() -> bool:
 static func planner_available(focus_id: String) -> bool:
 	var body := ship_body()
 	if body == "":
-		return false
+		return legs[leg_index_at(time_jd)]["kind"] == "transfer"   # a course change can be planned in flight
 	return body == focus_id or bodies[body]["parent"] == focus_id or not plan.is_empty()
 
 
