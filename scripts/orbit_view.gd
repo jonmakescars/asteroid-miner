@@ -271,19 +271,31 @@ func _fill_destinations(keep_id: String) -> void:
 
 func _on_target_changed() -> void:
 	if GameState.ship_in_transit():
-		_on_keep_course()
+		_drop_draft(false)   # another destination was picked: the draft of the old one is no longer meant
 		return
 	legs = [GameState.parked_leg()]
 	plan = {}
 	message = ""
 
 
-## Drops the draft of a course change: the ship keeps the plan it is following.
+## "Keep current course": drops the draft and shows the course the ship is following again, with its
+## destination and target orbit.
 func _on_keep_course() -> void:
-	if not GameState.saved_plan.is_empty():
-		plan = GameState.saved_plan
-		GameState.saved_plan = {}
+	_drop_draft(true)
+
+
+func _drop_draft(show_followed_course: bool) -> void:
+	if GameState.saved_plan.is_empty():
+		return
+	plan = GameState.saved_plan
+	GameState.saved_plan = {}
+	if show_followed_course:
+		var index := destination_ids.find(str(plan["target_id"]))
+		if index >= 0:
+			target_picker.select(index)
+		GameState.target_orbits[str(plan["target_id"])] = plan["target_orbit"]
 		_sync_aero()
+		_sync_orbit_control()
 		message = "Keeping the current course."
 
 

@@ -218,6 +218,38 @@ static func advance(delta: float) -> void:
 	_update_facilities()
 
 
+## One line about the ship's current orbit for the top bar: periapsis and apoapsis altitude, the angle of the
+## axis of the orbit, the current altitude and the speed relative to the body (the airspeed while the ship is
+## in the atmosphere).
+static func orbit_status_text() -> String:
+	var leg: Dictionary = legs[leg_index_at(time_jd)]
+	var frame := str(leg["parent"])
+	var body: Dictionary = bodies[frame]
+	var segment: Dictionary = leg["segment"]
+	var a := float(segment["semi_major_axis_km"])
+	var e := float(segment["eccentricity"])
+	var radius := float(body["radius_km"])
+	var periapsis := a * (1.0 - e) - radius
+	var apoapsis := a * (1.0 + e) - radius
+	var position_fn := func(t: float) -> Vector2: return Kepler.position_at(segment, t)
+	var position: Vector2 = position_fn.call(time_jd)
+	var speed := TransferPlanner.velocity_kms(position_fn, time_jd).length()
+	var altitude := position.length() - radius
+	var speed_name := "Speed"
+	if body.has("atmosphere") and altitude < AeroBraking.interface_altitude_km(body["atmosphere"]):
+		speed_name = "Airspeed"
+	var axis_text := "circular"
+	if not OrbitControl.is_circular(periapsis, apoapsis):
+		axis_text = "%.0f deg" % fposmod(float(segment["argument_of_periapsis_deg"]), 360.0)
+	return "%s: periapsis %s km | apoapsis %s km | axis %s | altitude %s km | %s %.2f km/s" % [
+			("Orbit around " if leg["kind"] == "orbit" else "Flight around ") + str(body["name"]),
+			_km_text(periapsis), _km_text(apoapsis), axis_text, _km_text(altitude), speed_name, speed]
+
+
+static func _km_text(value: float) -> String:
+	return "%.1f" % value if absf(value) < 10000.0 else thousands(value)
+
+
 ## The plan the ship is actually following: the saved one while a course change is being drafted.
 static func running_plan() -> Dictionary:
 	return saved_plan if not saved_plan.is_empty() else plan

@@ -49,6 +49,7 @@ static func is_circular(rp: float, ra: float) -> bool:
 
 
 func _init() -> void:
+	_syncing = true   # changing the limits of a spin box can change (and announce) its value: ignore that
 	add_theme_constant_override("h_separation", 8)
 	_rp_spin = _add_row("Periapsis (km)", true)
 	_rp_slider = get_child(get_child_count() - 1) as HSlider
@@ -71,6 +72,7 @@ func _init() -> void:
 	_offset_spin.step = 1.0
 	for slider in [_rp_slider, _ra_slider]:
 		(slider as HSlider).step = 0.001
+	_syncing = false
 
 
 ## Adds a label, a spin box and a slider; the slider is the last child, the spin box is returned.
@@ -93,6 +95,7 @@ func _add_row(title: String, _altitude: bool) -> SpinBox:
 func setup(body_radius_km: float, max_altitude_km: float) -> void:
 	radius_km = body_radius_km
 	max_alt_km = max_altitude_km
+	_syncing = true   # setting the limits and the step re-snaps the spin boxes and may emit value_changed
 	for slider in [_rp_slider, _ra_slider]:
 		(slider as HSlider).min_value = 0.0
 		(slider as HSlider).max_value = _to_slider(max_alt_km)
@@ -100,6 +103,7 @@ func setup(body_radius_km: float, max_altitude_km: float) -> void:
 		(spin as SpinBox).min_value = MIN_FRACTION * radius_km
 		(spin as SpinBox).max_value = max_alt_km * 10.0
 		(spin as SpinBox).step = 0.1
+	_syncing = false
 
 
 ## Shows an orbit without sending the signal.

@@ -21,6 +21,8 @@ var view_button: Button
 var design_button: Button
 var date_label: Label
 var status_label: Label
+var ship_label: Label
+var orbit_label: Label
 
 
 ## current_scene is the path of the screen the bar sits on (its own button is left out).
@@ -49,6 +51,11 @@ func setup(current_scene: String, view_text: String) -> void:
 	time_row.add_child(date_label)
 	status_label = Label.new()
 	time_row.add_child(status_label)
+	ship_label = Label.new()
+	time_row.add_child(ship_label)
+	orbit_label = Label.new()
+	orbit_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	box.add_child(orbit_label)
 
 
 ## Adds a row of controls below the time row (before anything a screen adds later).
@@ -71,6 +78,8 @@ func set_view_text(text: String) -> void:
 func refresh() -> void:
 	pause_button.text = "Resume" if GameState.paused else "Pause"
 	date_label.text = GameState.date_text(GameState.time_jd)
+	ship_label.text = "   Ship: %s" % GameState.ship_name
+	orbit_label.text = GameState.orbit_status_text()
 	if GameState.paused:
 		status_label.text = "   Paused"
 		status_label.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3))
