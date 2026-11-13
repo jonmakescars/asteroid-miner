@@ -286,7 +286,7 @@ static func setup_plan(plan: Dictionary) -> void:
 	var aero := {"available": false, "enabled": false, "outcome": "ok", "message": ""}
 	plan["aero"] = aero
 	_use_propulsive_capture(plan)
-	if not target.has("atmosphere"):
+	if not (target.get("atmosphere") is Dictionary):
 		return
 	if GameState.ship_shield_cm <= 0.0:
 		aero["message"] = "No heat shield: aerobraking is not possible."
@@ -332,7 +332,7 @@ static func _set_target_outcome(plan: Dictionary) -> void:
 	if rp_alt < 0.0:
 		plan["outcome"] = "crash"
 		plan["outcome_text"] = "The periapsis of the target orbit (%.1f km) is below the surface: the ship will crash into %s." % [rp_alt, target["name"]]
-	elif target.has("atmosphere"):
+	elif target.get("atmosphere") is Dictionary:
 		var atmosphere: Dictionary = target["atmosphere"]
 		if rp_alt < float(atmosphere["min_periapsis_altitude_km"]):
 			plan["outcome"] = "burn_up"

@@ -300,11 +300,28 @@ func _drop_draft(show_followed_course: bool) -> void:
 
 
 func _on_plan() -> void:
+	if not plan.is_empty() and not plan["committed"]:
+		_cancel_plan()
+		return
 	# A new orbit around the body the ship is at starts from the current orbit, not from an earlier choice.
 	var here := GameState.ship_body() if GameState.ship_body() != "" else GameState.ship_frame()
 	if _selected_target_id() == here and not GameState.ship_in_transit():
 		GameState.target_orbits.erase(here)
 	_make_plan(false)
+
+
+## Cancel: forgets the orbit chosen for this destination and closes the planner. A course change in flight
+## goes back to showing the course the ship is following.
+func _cancel_plan() -> void:
+	GameState.target_orbits.erase(str(plan["target_id"]))
+	if not GameState.saved_plan.is_empty():
+		_drop_draft(true)
+		return
+	plan = {}
+	var parked := GameState.parked_leg()
+	if not parked.is_empty():
+		legs = [parked]
+	message = ""
 
 
 ## Plans the next departure with the player's target orbit for the chosen destination. With keep_aero_off an
@@ -571,6 +588,7 @@ func _update_ui() -> void:
 	var in_transit := _in_transit()
 	var burn_pending: bool = not plan.is_empty() and plan["committed"] and not plan["departure_done"]
 	plan_button.disabled = destination_ids.is_empty() or burn_pending
+	plan_button.text = "Cancel" if not plan.is_empty() and not plan["committed"] else "Plan"
 	target_picker.disabled = destination_ids.is_empty() or burn_pending
 	keep_button.visible = not GameState.saved_plan.is_empty()
 	var draft_bad: bool = not plan.is_empty() and not plan["committed"] and str(plan.get("outcome", "ok")) != "ok"

@@ -236,7 +236,7 @@ static func orbit_status_text() -> String:
 	var speed := TransferPlanner.velocity_kms(position_fn, time_jd).length()
 	var altitude := position.length() - radius
 	var speed_name := "Speed"
-	if body.has("atmosphere") and altitude < AeroBraking.interface_altitude_km(body["atmosphere"]):
+	if body.get("atmosphere") is Dictionary and altitude < AeroBraking.interface_altitude_km(body["atmosphere"]):
 		speed_name = "Airspeed"
 	var axis_text := "circular"
 	if not OrbitControl.is_circular(periapsis, apoapsis):
