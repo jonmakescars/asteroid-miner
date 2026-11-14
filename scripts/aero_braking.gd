@@ -329,14 +329,17 @@ static func _set_target_outcome(plan: Dictionary) -> void:
 	plan["outcome"] = "ok"
 	plan["outcome_text"] = ""
 	plan["warning"] = ""
-	if rp_alt < 0.0:
+	if rp_alt <= 0.0:
 		plan["outcome"] = "crash"
-		plan["outcome_text"] = "The periapsis of the target orbit (%.1f km) is below the surface: the ship will crash into %s." % [rp_alt, target["name"]]
+		plan["outcome_text"] = "The periapsis of the target orbit (%.1f km) is at or below the surface: the ship will crash into the surface of %s and be lost." % [rp_alt, target["name"]]
 	elif target.get("atmosphere") is Dictionary:
 		var atmosphere: Dictionary = target["atmosphere"]
 		if rp_alt < float(atmosphere["min_periapsis_altitude_km"]):
 			plan["outcome"] = "burn_up"
 			plan["outcome_text"] = "The periapsis of the target orbit (%.1f km) is deep inside the atmosphere of %s (below %.0f km): the ship will burn up." % [rp_alt, target["name"], float(atmosphere["min_periapsis_altitude_km"])]
+			var burn_aero: Dictionary = plan.get("aero", {})
+			if burn_aero.has("shield_after"):
+				burn_aero["shield_after"] = 0.0   # the ship burns up: nothing is left of the shield
 		elif rp_alt < interface_altitude_km(atmosphere):
 			plan["warning"] = "The periapsis of the target orbit (%.1f km) is inside the upper atmosphere of %s (below %.0f km): the orbit will decay." % [rp_alt, target["name"], interface_altitude_km(atmosphere)]
 

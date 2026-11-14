@@ -47,6 +47,7 @@ static var saved_plan: Dictionary = {}
 ## The target orbit the player chose for each destination body: {rp_alt_km, ra_alt_km, offset_deg}.
 static var target_orbits: Dictionary = {}
 static var message := ""
+static var ship_lost := false   # true once the ship has been lost: the screen draws no ship and no course
 static var lost_event: Dictionary = {}   # {text, burn}: set when the ship is lost; the screen shows it and clears it
 static var ship_name := "Ship"
 static var cargo: Array = []   # facility type ids of the kits the ship carries
@@ -136,6 +137,7 @@ static func reset_mission() -> void:
 	shield_used_mj_m2 = 0.0
 	ship_health = 1.0
 	lost_event = {}
+	ship_lost = false
 	budget_eur = start_budget_eur
 	facilities = {}
 	for entry in start_facilities:
@@ -233,20 +235,26 @@ static func advance(delta: float) -> void:
 				time_jd = maxf(time_jd, stop)
 				warp_index = AERO_WARP_INDEX
 				step = delta * float(WARP_STEPS[warp_index])
-		time_jd += step
+		var lost_at := _loss_time()
+		if lost_at > 0.0 and time_jd + step >= lost_at:
+			time_jd = maxf(time_jd, lost_at)   # stop exactly where the ship blows up
+		else:
+			time_jd += step
 	_decay_orbit()
 	var running := running_plan()
 	if not running.is_empty() and running["committed"]:
 		if not running["departure_done"] and time_jd >= float(running["t_dep"]):
 			running["departure_done"] = true
 			apply_burn(float(running["dv_departure"]))
-		if time_jd >= float(running.get("t_end", running["t_arr"])):
+		var lost_at_end := _loss_time()
+		var end_time := lost_at_end if lost_at_end > 0.0 else float(running.get("t_end", running["t_arr"]))
+		if time_jd >= end_time:
 			var aero: Dictionary = running.get("aero", {})
 			if str(running.get("outcome", "ok")) != "ok":
 				# The planner only warned about this; now it happens. (Placeholder rules: the ship is wrecked.)
 				ship_health = 0.0
-				message = "Ship lost near %s: %s" % [running["target_name"], running["outcome_text"]]
-				_lose_ship(message, bodies[str(running["target_id"])].get("atmosphere") is Dictionary)
+				message = _lost_text(str(running["outcome"]), str(running["target_name"]))
+				_lose_ship(message, str(running["outcome"]) != "crash" and bodies[str(running["target_id"])].get("atmosphere") is Dictionary)
 			else:
 				apply_burn(float(running["dv_arrival"]))
 				message = "Arrived at %s." % running["target_name"]
@@ -262,7 +270,20 @@ static func advance(delta: float) -> void:
 ## axis of the orbit, the current altitude and the speed relative to the body (the airspeed while the ship is
 ## in the atmosphere).
 static func orbit_status_text() -> String:
+	if ship_lost:
+		return "Ship lost."
 	var leg: Dictionary = legs[leg_index_at(time_jd)]
+	if leg["kind"] == "transfer":
+		# On the way, but inside the local view of another body (leaving or approaching it): the altitude and the speed
+		# relative to that body, not the numbers of the transfer orbit around the Sun.
+		var near_id := smallest_view(time_jd)
+		if near_id != str(leg["parent"]) and near_id != "sun":
+			var dt := 60.0 / 86400.0
+			var near_speed := (ship_rel(near_id, time_jd + dt) - ship_rel(near_id, time_jd - dt)).length() / 120.0
+			var near_altitude := ship_rel(near_id, time_jd).length() - float(bodies[near_id]["radius_km"])
+			var closing := ship_rel(near_id, time_jd + dt).length() < ship_rel(near_id, time_jd - dt).length()
+			var verb := "Approaching " if closing else "Leaving "
+			return "%s%s: altitude %s km | Speed %.2f km/s (relative to %s)" % [verb, str(bodies[near_id]["name"]), _km_text(near_altitude), near_speed, str(bodies[near_id]["name"])]
 	var frame := str(leg["parent"])
 	var body: Dictionary = bodies[frame]
 	var segment: Dictionary = leg["segment"]
@@ -320,10 +341,40 @@ static func _next_atmosphere_entry() -> float:
 
 # ---------------------------------------------------------------- orbit decay
 
+## The text shown after the ship was lost on arrival (past tense; the planner's own texts speak of the future).
+static func _lost_text(outcome: String, target_name: String) -> String:
+	match outcome:
+		"crash":
+			return "The ship crashed into the surface of %s and was lost." % target_name
+		"burn_up":
+			return "Ship lost: it burned up in the atmosphere of %s because the periapsis of the target orbit was too deep." % target_name
+		"too_slow":
+			return "Ship lost: it slowed down too much in the atmosphere of %s and could not get out of it again." % target_name
+	return "Ship lost: it was too fast to be captured by %s and flew past." % target_name
+
+
+## When the ship of the running plan blows up (crash or burn-up in the target orbit): the first time it reaches the
+## periapsis of the target orbit (the end of the capture is when it would have finished the manoeuvre). -1 if the
+## plan does not end in a loss of that kind.
+static func _loss_time() -> float:
+	var running := running_plan()
+	if running.is_empty() or not running["committed"] or ship_lost:
+		return -1.0
+	if not str(running.get("outcome", "ok")) in ["crash", "burn_up"]:
+		return -1.0
+	var captures: Array = running.get("capture_legs", [])
+	if captures.is_empty():
+		return -1.0
+	var segment: Dictionary = captures[captures.size() - 1]["segment"]
+	var to_periapsis_deg := fposmod(-float(segment["mean_anomaly_deg"]), 360.0)
+	return float(segment["epoch_jd"]) + to_periapsis_deg / float(segment["mean_motion_deg_per_day"])
+
+
 ## Records that the ship was lost: time stops and the screen shows the loss (with the burning-up animation
 ## when it happened in an atmosphere).
 static func _lose_ship(text: String, burn: bool) -> void:
 	lost_event = {"text": text, "burn": burn}
+	ship_lost = true
 	paused = true
 
 const DECAY_MAX_STEPS := 60       # the decay is simulated in at most this many groups of passes
@@ -405,6 +456,8 @@ static func _next_decay_entry(until_jd: float) -> float:
 ## Carries out the passes of the decay that are over: the orbit gets lower, the shield takes the heat, and
 ## at the end the ship is lost.
 static func _decay_orbit() -> void:
+	if ship_lost:
+		return
 	var leg: Dictionary = legs[leg_index_at(time_jd)]
 	if leg["kind"] != "orbit":
 		return

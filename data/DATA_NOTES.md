@@ -217,3 +217,25 @@ The top bar shows "axis" again (periapsis direction). 10g and the first 10h atte
   view entry) and only looked at the next one if the previous had not already slowed the warp. At a high warp the pass/morph start
   came first, time jumped straight to it and the (earlier) view entry was never considered. Now all three are computed for the
   step and the earliest is used, so the ship stops where it enters the smaller view (the view then switches there).
+
+## Step 10l – ship-lost texts in the past tense
+- The text after a loss on arrival is built by `GameState._lost_text(outcome, target)` (crash, burn_up, too_slow, too fast) in the
+  past tense; the planner's `outcome_text` (future tense) is still used for the warnings before launch. The decay message
+  was already in the past tense.
+
+## Step 10m – burn-up / crash handling
+- Why the ship is lost below 25 km at Mars: `min_periapsis_altitude_km` in bodies.json (Mars 25, Earth 60) is a placeholder rule: a target
+  orbit with its periapsis below it means "burn up", no matter the heat or the g-force (the heat shield display is only about the passes).
+- When the target periapsis is lower than that limit the heat shield prediction is locked to 0% (`_set_target_outcome`).
+- A predicted shield capacity below 20% (1 - HEAT_MARGIN) after the manoeuvre is shown in the colour of the warnings (the info label is a
+  RichTextLabel now; a line starting with `WARNING_MARK` is coloured).
+- The ship is lost when it blows up, not when the manoeuvre would have finished: `GameState._loss_time()` = the first arrival at the
+  periapsis of the target orbit (the arrival itself for a propulsive capture). Time stops exactly there; `GameState.ship_lost` makes the
+  screen draw no ship and no course, and the burn-up animation plays (not for a crash).
+- A target periapsis altitude of 0 or less is a crash (also where there is no atmosphere). Text only for now: "The ship crashed into the
+  surface of X and was lost." (animation later).
+
+## Step 10n – top bar near another body
+- While the ship is still on a transfer leg (Sun-centred) but inside the local view of a body, the top bar now shows
+  "Approaching/Leaving X: altitude ... km | Speed ... km/s (relative to X)" instead of the periapsis, apoapsis and altitude of the
+  transfer orbit around the Sun. The first aerobraking leg then takes over as before.

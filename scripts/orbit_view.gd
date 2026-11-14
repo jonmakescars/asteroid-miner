@@ -49,7 +49,7 @@ var destination_ids: Array = []  # what the destination picker currently offers
 var picker_origin := ""         # the body the picker was filled for
 
 var bar: TopBar
-var info_label: Label
+var info_label: RichTextLabel
 var target_picker: OptionButton
 var plan_button: Button
 var launch_button: Button
@@ -202,7 +202,11 @@ func _build_ui() -> void:
 	warning_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	warning_label.add_theme_color_override("font_color", Color(1.0, 0.55, 0.3))
 	bar.box.add_child(warning_label)
-	info_label = Label.new()
+	info_label = RichTextLabel.new()   # rich text so that single lines can be coloured
+	info_label.bbcode_enabled = true
+	info_label.fit_content = true
+	info_label.scroll_active = false
+	info_label.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	info_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	info_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	bar.box.add_child(info_label)
@@ -659,7 +663,7 @@ func _update_ui() -> void:
 	bar.set_design_visible(GameState.design_available(frame_id))
 	bar.set_view_text("View: " + str(frames[frame_index]))
 	bar.refresh()
-	info_label.text = _info_text()
+	info_label.text = _info_bbcode(_info_text())
 
 
 func _span_text(days: float) -> String:
@@ -691,9 +695,11 @@ func _aero_lines() -> PackedStringArray:
 		lines.append("Heat %.0f MJ/m2 | peak %.1f g | peak heating %.1f MW/m2" % [
 				float(aero["heat"]), float(aero["peak_g"]), float(aero["peak_flux"])])
 	if aero.get("enabled", false) and aero.has("shield_after"):
-		lines.append("Heat shield capacity: %.0f%% now, %.0f%% after the passes" % [
+		# Below the reserve the planner keeps (20%), the line has the colour of the warnings.
+		var low_shield: bool = float(aero["shield_after"]) < 1.0 - AeroBraking.HEAT_MARGIN
+		lines.append((WARNING_MARK if low_shield else "") + "Heat shield capacity: %.0f%% now, %.0f%% after the passes" % [
 				float(aero["shield_before"]) * 100.0, float(aero["shield_after"]) * 100.0])
-		if aero["outcome"] == "ok":
+		if aero["outcome"] == "ok" and str(plan.get("outcome", "ok")) == "ok":
 			if float(aero["shield_after"]) <= 0.0 or float(aero["heat"]) > float(aero["shield_before"]) * AeroBraking.shield_capacity_mj_m2(GameState.ship_shield_cm):
 				lines.append("Warning: the heat shield will be used up and the ship will be damaged.")
 			elif float(aero["peak_g"]) > AeroBraking.G_LIMIT:
@@ -706,6 +712,18 @@ func _aero_lines() -> PackedStringArray:
 	if str(plan.get("warning", "")) != "":
 		lines.append("Warning: " + str(plan["warning"]))
 	return lines
+
+
+const WARNING_MARK := "\u0001"   # at the start of an info line: draw the line in the colour of the warnings
+
+## The info text as bbcode: brackets of the text are escaped, lines that start with WARNING_MARK are coloured.
+func _info_bbcode(text: String) -> String:
+	var out: PackedStringArray = []
+	for line in text.split("\n"):
+		var colored: bool = line.begins_with(WARNING_MARK)
+		var shown: String = line.trim_prefix(WARNING_MARK).replace("[", "[lb]")
+		out.append("[color=#ff8c4d]%s[/color]" % shown if colored else shown)
+	return "\n".join(out)
 
 
 func _info_text() -> String:
@@ -799,7 +817,7 @@ func _draw() -> void:
 		ring_segment = morph["segment"]
 	elif leg["parent"] == frame_id:
 		ring_segment = leg["segment"]
-	if not ring_segment.is_empty():
+	if not ring_segment.is_empty() and not GameState.ship_lost:
 		var ring := PackedVector2Array()
 		for point in Kepler.orbit_points(ring_segment, 64):
 			ring.append(_to_screen(point, centre, px_per_km))
@@ -810,6 +828,8 @@ func _draw() -> void:
 		var segment := Kepler.segment_at(bodies[kid_id]["orbit_segments"], time_jd)
 		_draw_body(kid_id, _to_screen(Kepler.position_at(segment, time_jd), centre, px_per_km), px_per_km)
 
+	if GameState.ship_lost:
+		return   # the ship and its course are gone
 	var ship_local := GameState.ship_rel(frame_id, time_jd)
 	var p := _to_screen(ship_local, centre, px_per_km)
 	draw_colored_polygon(PackedVector2Array([p + Vector2(0, -7), p + Vector2(6, 5), p + Vector2(-6, 5)]), Color.WHITE)
