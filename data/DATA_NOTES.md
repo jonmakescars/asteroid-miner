@@ -239,3 +239,14 @@ The top bar shows "axis" again (periapsis direction). 10g and the first 10h atte
 - While the ship is still on a transfer leg (Sun-centred) but inside the local view of a body, the top bar now shows
   "Approaching/Leaving X: altitude ... km | Speed ... km/s (relative to X)" instead of the periapsis, apoapsis and altitude of the
   transfer orbit around the Sun. The first aerobraking leg then takes over as before.
+
+## Step 10o – zoom between views, double tap to focus
+- Every change of the view (auto switching, the View button, a double tap) is now a zoom of `ZOOM_SECONDS` (0.7 s, real time) instead of a cut.
+  `shown_frame` is the view that is drawn; `_update_zoom` starts a zoom (`zoom_from` -> `zoom_to`) when the chosen view (`_frame_id()`)
+  differs. During the zoom both scenes are drawn (`_draw_scene`), the scale changes in equal ratios, the camera moves from one body to the
+  other (linear in 1/scale, so it behaves like a real zoom into the point) and the scene that is left fades out, the one it goes to fades in
+  (`scene_alpha`, `_fade`). If the chosen view changes during a zoom, that zoom is finished at once and the next one starts.
+- Double tap (two taps within 400 ms) on a body of the shown view: the view focuses on it (View shows its name). A double tap on the body the
+  view is centred on zooms out to the body it orbits (to "auto" for the Sun). A tap on a body does not change the warp any more; taps elsewhere
+  in the bottom third still do.
+- Not done yet: pinch zoom and panning by hand, and the automatic widening of the view when doing that.

@@ -16,6 +16,9 @@ const MIN_BODY_RADIUS_PX := 3.0
 const RING_RADIUS_PX := 10.0
 const ORBIT_SAMPLES := 160
 const MOBILE_UI_SCALE := 2.0
+const ZOOM_SECONDS := 0.7          # a change of the view is a zoom of this many (real) seconds
+const DOUBLE_TAP_MS := 400         # two taps on the same body within this time focus the view on it
+const TAP_REACH_PX := 26.0         # a tap this close to a body (besides its size) counts as a tap on it
 const VIEW_HYSTERESIS := 1.15     # the auto view switches outwards at this multiple of the distance it switched in at
 
 # The game state is shared between screens (see GameState); these properties are shortcuts to it.
@@ -44,6 +47,13 @@ var message: String:
 
 var frames: Array = []          # "auto" plus every body id
 var frame_index := 0
+var shown_frame := ""           # the view that is drawn (the one chosen, once a zoom has finished)
+var zoom_from := ""             # during a zoom: the view it starts from and the one it goes to
+var zoom_to := ""
+var zoom_progress := 0.0        # 0 to 1 while zooming
+var scene_alpha := 1.0          # transparency of the scene that is being drawn (zooming fades one scene into the other)
+var last_tap_body := ""
+var last_tap_ms := 0
 var auto_frame := ""            # the body the "auto" view currently shows (see _update_auto_frame)
 var destination_ids: Array = []  # what the destination picker currently offers
 var picker_origin := ""         # the body the picker was filled for
@@ -218,9 +228,78 @@ func _gui_input(event: InputEvent) -> void:
 	var click := event as InputEventMouseButton
 	if click == null or not click.pressed or click.button_index != MOUSE_BUTTON_LEFT:
 		return
+	var hit := _body_at(click.position)
+	if hit != "":
+		# A tap on a body does not change the warp; two quick taps on the same body zoom to it.
+		var now := Time.get_ticks_msec()
+		if hit == last_tap_body and now - last_tap_ms <= DOUBLE_TAP_MS:
+			last_tap_body = ""
+			_focus_body(hit)
+		else:
+			last_tap_body = hit
+			last_tap_ms = now
+		return
+	last_tap_body = ""
 	if click.position.y < size.y * 0.67:
 		return
 	GameState.change_warp(-1 if click.position.x < size.x * 0.5 else 1)
+
+
+## The body (of the view that is shown) under a tap, or "" (the nearest one if several are close).
+func _body_at(point: Vector2) -> String:
+	if shown_frame == "" or zoom_from != "" or not bodies.has(shown_frame):
+		return ""
+	var centre := Vector2(size.x * 0.5, size.y * 0.58)
+	var px_per_km := _scale_of(shown_frame)
+	var best := ""
+	var best_distance := INF
+	var candidates: Array = [shown_frame] + (children[shown_frame] as Array)
+	for id in candidates:
+		var body_point := centre
+		if str(id) != shown_frame:
+			var segment := Kepler.segment_at(bodies[id]["orbit_segments"], time_jd)
+			body_point = _to_screen(Kepler.position_at(segment, time_jd), centre, px_per_km)
+		var radius_px := maxf(float(bodies[id]["radius_km"]) * px_per_km, RING_RADIUS_PX)
+		var distance := body_point.distance_to(point)
+		if distance <= radius_px + TAP_REACH_PX and distance < best_distance:
+			best = str(id)
+			best_distance = distance
+	return best
+
+
+## Double tap on a body: the view zooms to it. A double tap on the body the view is already centred on zooms
+## out to the body it orbits (or back to the automatic view when that is the Sun).
+func _focus_body(id: String) -> void:
+	var target := id
+	if id == shown_frame:
+		var parent: Variant = bodies[id]["parent"]
+		target = "auto" if parent == null else str(parent)
+	var index := frames.find(target)
+	if index >= 0:
+		frame_index = index
+
+
+## Pixels per km of the view of a body: its widest orbit fits the screen (the same for every drawing).
+func _scale_of(frame_id: String) -> float:
+	var half_extent := minf(size.x * 0.5, size.y * 0.38)
+	return half_extent * GameState.VIEW_FILL / GameState.view_extent_km(frame_id, time_jd)
+
+
+func _update_zoom(delta: float) -> void:
+	var target := _frame_id()
+	if shown_frame == "":
+		shown_frame = target
+		return
+	if zoom_from != "":
+		zoom_progress += delta / ZOOM_SECONDS
+		if zoom_progress >= 1.0 or zoom_to != target:
+			shown_frame = zoom_to
+			zoom_from = ""
+			zoom_to = ""
+	if zoom_from == "" and target != shown_frame:
+		zoom_from = shown_frame
+		zoom_to = target
+		zoom_progress = 0.0
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -612,6 +691,7 @@ func _process(delta: float) -> void:
 		add_child(lost_overlay)
 		lost_overlay.play(str(event["text"]), bool(event["burn"]))
 	_update_auto_frame()
+	_update_zoom(delta)
 	if picker_origin != _picker_key():
 		_fill_destinations(_selected_target_id())
 	_update_ui()
@@ -785,22 +865,46 @@ func _info_text() -> String:
 # ---------------------------------------------------------------- drawing
 
 func _draw() -> void:
-	var frame_id := _frame_id()
+	if shown_frame == "":
+		return
 	var centre := Vector2(size.x * 0.5, size.y * 0.58)
-	var half_extent := minf(size.x * 0.5, size.y * 0.38)
+	if zoom_from == "":
+		scene_alpha = 1.0
+		_draw_scene(shown_frame, centre, _scale_of(shown_frame))
+		return
+	# Zooming between two views: the camera moves from one body to the other while the scale changes smoothly
+	# (in steps of equal ratio); the scene of the view it leaves fades out and the scene it goes to fades in.
+	var w := smoothstep(0.0, 1.0, clampf(zoom_progress, 0.0, 1.0))
+	var scale_from := _scale_of(zoom_from)
+	var scale_to := _scale_of(zoom_to)
+	var px_per_km := exp(lerpf(log(scale_from), log(scale_to), w))
+	var offset := GameState.body_abs(zoom_to, time_jd) - GameState.body_abs(zoom_from, time_jd)
+	var span := 1.0 / scale_from - 1.0 / scale_to
+	var k := 0.0 if absf(span) < 1.0e-30 else (1.0 / scale_from - 1.0 / px_per_km) / span
+	var camera := offset * k
+	scene_alpha = 1.0 - w
+	_draw_scene(zoom_from, _to_screen(-camera, centre, px_per_km), px_per_km)
+	scene_alpha = w
+	_draw_scene(zoom_to, _to_screen(offset - camera, centre, px_per_km), px_per_km)
+	scene_alpha = 1.0
+
+
+## The faded colour for the scene being drawn.
+func _fade(colour: Color) -> Color:
+	return Color(colour.r, colour.g, colour.b, colour.a * scene_alpha)
+
+
+## Draws the view of one body: centre is where the body is on the screen, px_per_km the scale.
+func _draw_scene(frame_id: String, centre: Vector2, px_per_km: float) -> void:
 	var kid_ids: Array = children[frame_id]
 	var leg: Dictionary = legs[_leg_index_at(time_jd)]
-
-	# Scale so that the widest orbit in this frame (or the ship's orbit, if it has no children) fits.
-	var extent := GameState.view_extent_km(frame_id, time_jd)
-	var px_per_km := half_extent * GameState.VIEW_FILL / extent
 
 	for kid_id in kid_ids:
 		var segment := Kepler.segment_at(bodies[kid_id]["orbit_segments"], time_jd)
 		var line := PackedVector2Array()
 		for point in Kepler.orbit_points(segment, ORBIT_SAMPLES):
 			line.append(_to_screen(point, centre, px_per_km))
-		draw_polyline(line, Color(1, 1, 1, 0.25), 1.0, true)
+		draw_polyline(line, _fade(Color(1, 1, 1, 0.25)), 1.0, true)
 
 	# Planned transfer path, drawn when the transfer happens around the body at the centre of the view.
 	if not plan.is_empty() and plan["frame"] == frame_id:
@@ -808,7 +912,7 @@ func _draw() -> void:
 		for i in 81:
 			var t := float(plan["t_dep"]) + float(plan["flight_days"]) * float(i) / 80.0
 			path.append(_to_screen(Kepler.position_at(plan["transfer_segment"], t), centre, px_per_km))
-		draw_polyline(path, Color(0.4, 0.9, 1.0, 0.9), 1.5, true)
+		draw_polyline(path, _fade(Color(0.4, 0.9, 1.0, 0.9)), 1.5, true)
 	_draw_local_route(frame_id, centre, px_per_km)
 	# The orbit the ship is in; while a burn or an aerobraking pass changes it, the orbit morphs.
 	var ring_segment: Dictionary = {}
@@ -821,7 +925,7 @@ func _draw() -> void:
 		var ring := PackedVector2Array()
 		for point in Kepler.orbit_points(ring_segment, 64):
 			ring.append(_to_screen(point, centre, px_per_km))
-		draw_polyline(ring, Color(0.4, 0.9, 1.0, 0.6), 1.0, true)
+		draw_polyline(ring, _fade(Color(0.4, 0.9, 1.0, 0.6)), 1.0, true)
 
 	_draw_body(frame_id, centre, px_per_km)
 	for kid_id in kid_ids:
@@ -832,8 +936,8 @@ func _draw() -> void:
 		return   # the ship and its course are gone
 	var ship_local := GameState.ship_rel(frame_id, time_jd)
 	var p := _to_screen(ship_local, centre, px_per_km)
-	draw_colored_polygon(PackedVector2Array([p + Vector2(0, -7), p + Vector2(6, 5), p + Vector2(-6, 5)]), Color.WHITE)
-	draw_string(ThemeDB.fallback_font, p + Vector2(10, 22), GameState.ship_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color.WHITE)
+	draw_colored_polygon(PackedVector2Array([p + Vector2(0, -7), p + Vector2(6, 5), p + Vector2(-6, 5)]), _fade(Color.WHITE))
+	draw_string(ThemeDB.fallback_font, p + Vector2(10, 22), GameState.ship_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, _fade(Color.WHITE))
 
 
 ## The parts of the planned route that lie inside the local view of a body: the escape from the body the ship
@@ -842,7 +946,7 @@ func _draw() -> void:
 func _draw_local_route(frame_id: String, centre: Vector2, px_per_km: float) -> void:
 	if plan.is_empty():
 		return
-	var route_colour := Color(0.4, 0.9, 1.0, 0.9)
+	var route_colour := _fade(Color(0.4, 0.9, 1.0, 0.9))
 	if str(plan["frame"]) != frame_id:
 		var transfer_leg := GameState.plan_transfer_leg(plan)
 		if not transfer_leg.is_empty():
@@ -858,7 +962,7 @@ func _draw_local_route(frame_id: String, centre: Vector2, px_per_km: float) -> v
 		var ring := PackedVector2Array()
 		for point in Kepler.orbit_points(capture_leg["segment"], 64):
 			ring.append(_to_screen(point, centre, px_per_km))
-		draw_polyline(ring, Color(0.4, 0.9, 1.0, 0.7 if capture_leg["kind"] == "orbit" else 0.3), 1.0, true)
+		draw_polyline(ring, _fade(Color(0.4, 0.9, 1.0, 0.7 if capture_leg["kind"] == "orbit" else 0.3)), 1.0, true)
 
 
 ## Points of the route near one end of a transfer: sampled at growing time steps from t_origin (forwards for
@@ -889,13 +993,13 @@ func _to_screen(position_km: Vector2, centre: Vector2, px_per_km: float) -> Vect
 func _draw_body(id: String, screen_position: Vector2, px_per_km: float) -> void:
 	var body: Dictionary = bodies[id]
 	var radius_px := maxf(MIN_BODY_RADIUS_PX, float(body["radius_km"]) * px_per_km)
-	var colour := Color.html(body["draw_color"])
+	var colour := _fade(Color.html(body["draw_color"]))
 	draw_circle(screen_position, radius_px, colour)
 	if radius_px < RING_RADIUS_PX:
 		draw_arc(screen_position, RING_RADIUS_PX, 0.0, TAU, 32, colour, 1.5, true)
 		radius_px = RING_RADIUS_PX
 	var facility_count := GameState.facilities_at(id).size()
 	for n in facility_count:
-		draw_rect(Rect2(screen_position + Vector2(-radius_px - 9.0 - 9.0 * n, -radius_px - 9.0), Vector2(7, 7)), Color(1.0, 0.6, 0.2))
+		draw_rect(Rect2(screen_position + Vector2(-radius_px - 9.0 - 9.0 * n, -radius_px - 9.0), Vector2(7, 7)), _fade(Color(1.0, 0.6, 0.2)))
 	draw_string(ThemeDB.fallback_font, screen_position + Vector2(radius_px + 4.0, 5.0), body["name"],
-			HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color(1, 1, 1, 0.8))
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 16, _fade(Color(1, 1, 1, 0.8)))
