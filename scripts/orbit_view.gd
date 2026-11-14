@@ -16,6 +16,8 @@ const MIN_BODY_RADIUS_PX := 3.0
 const RING_RADIUS_PX := 10.0
 const ORBIT_SAMPLES := 160
 const MOBILE_UI_SCALE := 2.0
+const VIEW_FILL := 0.9            # share of the half screen width the widest orbit of a view fills
+const VIEW_HYSTERESIS := 1.15     # the auto view switches outwards at this multiple of the distance it switched in at
 
 # The game state is shared between screens (see GameState); these properties are shortcuts to it.
 var bodies: Dictionary:
@@ -43,6 +45,7 @@ var message: String:
 
 var frames: Array = []          # "auto" plus every body id
 var frame_index := 0
+var auto_frame := ""            # the body the "auto" view currently shows (see _update_auto_frame)
 var destination_ids: Array = []  # what the destination picker currently offers
 var picker_origin := ""         # the body the picker was filled for
 
@@ -579,7 +582,49 @@ func _frame_id() -> String:
 	# Before departure show the system the transfer happens in (for example the Sun for a planet transfer).
 	if index == 0 and not plan.is_empty() and plan["frame"] != parent_id:
 		return str(plan["frame"])
-	return parent_id
+	return auto_frame if auto_frame != "" else parent_id
+
+
+## Distance (km) from a body's centre that the view of that body shows at the edge of a portrait screen.
+func _view_radius_km(frame_id: String) -> float:
+	return _extent_km(frame_id) / VIEW_FILL
+
+
+## The distance the view of a frame is scaled to: the widest orbit of its children (or of the ship, if the
+## frame has no children), at least four body radii.
+func _extent_km(frame_id: String) -> float:
+	var kid_ids: Array = children[frame_id]
+	var extent := float(bodies[frame_id]["radius_km"]) * 4.0
+	var leg: Dictionary = legs[_leg_index_at(time_jd)]
+	if kid_ids.is_empty() and leg["parent"] == frame_id:
+		extent = maxf(extent, float(leg["segment"]["semi_major_axis_km"]) * 1.5)
+	for kid_id in kid_ids:
+		var segment := Kepler.segment_at(bodies[kid_id]["orbit_segments"], time_jd)
+		extent = maxf(extent, float(segment["semi_major_axis_km"]) * (1.0 + float(segment["eccentricity"])))
+	return extent
+
+
+## Chooses the body whose view the "auto" setting shows: the smallest view that still contains the ship. A view
+## is entered when the ship is inside the distance it shows at the edge of a portrait screen, and left only
+## when the ship is VIEW_HYSTERESIS times further out (so it does not flicker at the border).
+func _update_auto_frame() -> void:
+	var best := ""
+	var best_radius := INF
+	for id in bodies.keys():
+		var radius := _view_radius_km(str(id))
+		if radius >= best_radius:
+			continue
+		if GameState.ship_rel(str(id), time_jd).length() <= radius:
+			best = str(id)
+			best_radius = radius
+	if best == "":
+		best = "sun"
+	if auto_frame != "" and bodies.has(auto_frame) and best != auto_frame:
+		var current_radius := _view_radius_km(auto_frame)
+		var still_inside := GameState.ship_rel(auto_frame, time_jd).length() <= current_radius * VIEW_HYSTERESIS
+		if still_inside and best_radius >= current_radius:
+			return   # keep the view: the ship has just left it, but not far enough to switch out
+	auto_frame = best
 
 
 # ---------------------------------------------------------------- time and text
@@ -592,6 +637,7 @@ func _process(delta: float) -> void:
 		lost_overlay = ShipLostOverlay.new()
 		add_child(lost_overlay)
 		lost_overlay.play(str(event["text"]), bool(event["burn"]))
+	_update_auto_frame()
 	if picker_origin != _picker_key():
 		_fill_destinations(_selected_target_id())
 	_update_ui()
@@ -757,13 +803,8 @@ func _draw() -> void:
 	var leg: Dictionary = legs[_leg_index_at(time_jd)]
 
 	# Scale so that the widest orbit in this frame (or the ship's orbit, if it has no children) fits.
-	var extent := float(bodies[frame_id]["radius_km"]) * 4.0
-	if kid_ids.is_empty() and leg["parent"] == frame_id:
-		extent = maxf(extent, float(leg["segment"]["semi_major_axis_km"]) * 1.5)
-	for kid_id in kid_ids:
-		var segment := Kepler.segment_at(bodies[kid_id]["orbit_segments"], time_jd)
-		extent = maxf(extent, float(segment["semi_major_axis_km"]) * (1.0 + float(segment["eccentricity"])))
-	var px_per_km := half_extent * 0.9 / extent
+	var extent := _extent_km(frame_id)
+	var px_per_km := half_extent * VIEW_FILL / extent
 
 	for kid_id in kid_ids:
 		var segment := Kepler.segment_at(bodies[kid_id]["orbit_segments"], time_jd)

@@ -139,3 +139,12 @@ Kilometres, days (Julian Date), degrees, GM in km³/s², mass in kg. The game st
 - Ship in orbit around a planet, target one of its moons: the window search now covers at least 1.2 synodic periods of ship
   and moon (up to 40 ship orbits) instead of 1.5 ship orbits. Example: ship at 4000 km around Mars to Phobos (synodic
   period about 3 ship orbits) found no window when the ship was on the wrong side.
+
+## Step 10a: automatic view switching
+- The "auto" view (default) now follows the ship's distance, not only the leg it is on. Each body has a view radius =
+  the distance its view shows at the edge of a portrait screen (the widest orbit of its children, or 4 body radii, or 1.5x the
+  ship's orbit when it has no children; divided by VIEW_FILL 0.9). The view shows the body with the smallest view radius that
+  contains the ship (Moon -> Earth -> Sun). It switches in at the radius and out at 1.15x the radius (VIEW_HYSTERESIS).
+- So arriving at Mars, Ceres or Earth shows the local view as soon as the ship is that close, not at the insertion burn.
+- Not done yet: the same rule for manual panning/zooming, and the transfer route is only drawn in the view of the frame it was
+  planned in (so right after leaving Earth the route appears once the view has switched out to the Sun).
