@@ -47,7 +47,8 @@ func setup(current_scene: String, view_text: String) -> void:
 	_add_button(row, "Slower", func() -> void: GameState.change_warp(-1))
 	pause_button = _add_button(row, "Pause", func() -> void: GameState.toggle_pause())
 	_add_button(row, "Faster", func() -> void: GameState.change_warp(1))
-	view_button = _add_button(row, view_text, func() -> void: view_pressed.emit())
+	if view_text != "":   # a screen without a view button passes ""
+		view_button = _add_button(row, view_text, func() -> void: view_pressed.emit())
 	for screen in SCREENS:
 		var path: String = screen[1]
 		if path != current_scene:
@@ -83,7 +84,8 @@ func set_design_visible(value: bool) -> void:
 
 
 func set_view_text(text: String) -> void:
-	view_button.text = text
+	if view_button != null:
+		view_button.text = text
 
 
 func refresh() -> void:

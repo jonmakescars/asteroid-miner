@@ -18,6 +18,10 @@ const ORBIT_SAMPLES := 160
 const MOBILE_UI_SCALE := 2.0
 const ZOOM_SECONDS := 0.7          # a change of the view is a zoom of this many (real) seconds
 const DOUBLE_TAP_MS := 400         # two taps on the same body within this time focus the view on it
+const MAX_PX_PER_KM := 2.0         # the most the view can be zoomed in by hand
+const MIN_SUN_FIT := 0.25          # the most it can be zoomed out: this fraction of the scale that fits the Sun's system
+const DRAG_START_PX := 12.0        # a finger that moves this far is dragging the view, not tapping
+const SNAP_OUT := 0.8              # zooming out below this fraction of a body's own view switches to the view of the body it orbits
 const TAP_REACH_PX := 26.0         # a tap this close to a body (besides its size) counts as a tap on it
 const VIEW_HYSTERESIS := 1.15     # the auto view switches outwards at this multiple of the distance it switched in at
 
@@ -45,15 +49,27 @@ var message: String:
 	get: return GameState.message
 	set(value): GameState.message = value
 
-var frames: Array = []          # "auto" plus every body id
-var frame_index := 0
-var shown_frame := ""           # the view that is drawn (the one chosen, once a zoom has finished)
-var zoom_from := ""             # during a zoom: the view it starts from and the one it goes to
-var zoom_to := ""
-var zoom_progress := 0.0        # 0 to 1 while zooming
-var scene_alpha := 1.0          # transparency of the scene that is being drawn (zooming fades one scene into the other)
+var cam_body := ""              # the camera: the body its position is counted from ...
+var cam_offset := Vector2.ZERO  # ... the point at the centre of the screen, relative to that body (km)
+var cam_scale := 0.0            # pixels per km
+var free_camera := false        # true after the player zoomed by hand: the camera stays where it is
+var last_target := ""           # the view that was chosen last (a change of it starts a zoom)
+var anim_target := ""           # while zooming to a view: that view, and where the zoom started
+var anim_t := 0.0
+var anim_free := false
+var anim_body0 := ""
+var anim_offset0 := Vector2.ZERO
+var anim_scale0 := 1.0
+var line_alpha := 1.0           # transparency of the orbit lines and of the markers of the scene being drawn
+var marker_alpha := 1.0
+var touches: Dictionary = {}    # finger index -> position, for the pinch gesture
+var gesture_ms := -1000         # when a pinch or a wheel zoom last happened (taps right after it are ignored)
 var last_tap_body := ""
 var last_tap_ms := 0
+var mouse_down := false         # the (first) finger or the left button is down
+var dragged := false            # ... and has moved so far that it drags the view
+var press_point := Vector2.ZERO
+var last_tap_point := Vector2.ZERO
 var auto_frame := ""            # the body the "auto" view currently shows (see _update_auto_frame)
 var destination_ids: Array = []  # what the destination picker currently offers
 var picker_origin := ""         # the body the picker was filled for
@@ -99,14 +115,11 @@ func _ready() -> void:
 	if not GameState.load_data():
 		set_process(false)
 		return
-	frames = ["auto"] + GameState.bodies.keys()
-	frame_index = GameState.view_frame_index
 	_build_ui()
 	_fill_destinations(GameState.view_target_id)
 
 
 func _goto(scene_path: String) -> void:
-	GameState.view_frame_index = frame_index
 	GameState.view_target_id = _selected_target_id()
 	get_tree().change_scene_to_file(scene_path)
 
@@ -115,8 +128,7 @@ func _goto(scene_path: String) -> void:
 
 func _build_ui() -> void:
 	bar = TopBar.new()
-	bar.setup("res://main.tscn", "View: auto")
-	bar.view_pressed.connect(func() -> void: frame_index = (frame_index + 1) % frames.size())
+	bar.setup("res://main.tscn", "")
 	bar.navigate.connect(_goto)
 	add_child(bar)
 
@@ -222,11 +234,60 @@ func _build_ui() -> void:
 	bar.box.add_child(info_label)
 
 
-## Tapping or clicking the bottom third of the screen changes the time flow, as in the solar system
-## view: left half = slower, right half = faster.
+## Two fingers zoom (and move) the view; the mouse wheel does the same. Tapping or clicking the bottom third of the
+## screen changes the time flow, as in the solar system view: left half = slower, right half = faster. Two quick taps
+## on a body zoom to it.
 func _gui_input(event: InputEvent) -> void:
+	var touch := event as InputEventScreenTouch
+	if touch != null:
+		if touch.pressed:
+			touches[touch.index] = touch.position
+			if touches.size() >= 2:
+				gesture_ms = Time.get_ticks_msec()
+		else:
+			touches.erase(touch.index)
+		return
+	var drag := event as InputEventScreenDrag
+	if drag != null:
+		if touches.size() >= 2 and touches.has(drag.index):
+			var before_middle := _touch_middle()
+			var before_distance := _touch_distance()
+			touches[drag.index] = drag.position
+			var after_distance := _touch_distance()
+			if before_distance > 8.0 and after_distance > 8.0:
+				_zoom_about(before_middle, after_distance / before_distance, _touch_middle())
+			gesture_ms = Time.get_ticks_msec()
+		elif touches.has(drag.index):
+			touches[drag.index] = drag.position
+		return
+	var motion := event as InputEventMouseMotion
+	if motion != null:
+		# One finger (or the left button) drags the view.
+		if mouse_down and touches.size() < 2 and anim_target == "":
+			if not dragged and motion.position.distance_to(press_point) > DRAG_START_PX:
+				dragged = true
+				_pan(motion.position - press_point)
+			elif dragged:
+				_pan(motion.relative)
+		return
 	var click := event as InputEventMouseButton
-	if click == null or not click.pressed or click.button_index != MOUSE_BUTTON_LEFT:
+	if click == null:
+		return
+	if click.pressed and (click.button_index == MOUSE_BUTTON_WHEEL_UP or click.button_index == MOUSE_BUTTON_WHEEL_DOWN):
+		_zoom_about(click.position, 1.2 if click.button_index == MOUSE_BUTTON_WHEEL_UP else 1.0 / 1.2, click.position)
+		gesture_ms = Time.get_ticks_msec()
+		return
+	if click.button_index != MOUSE_BUTTON_LEFT:
+		return
+	if click.pressed:
+		mouse_down = true
+		dragged = false
+		press_point = click.position
+		return
+	mouse_down = false
+	# A tap counts when the finger is lifted, and not at the end of a pinch or a drag.
+	if dragged or Time.get_ticks_msec() - gesture_ms < 350:
+		dragged = false
 		return
 	var hit := _body_at(click.position)
 	if hit != "":
@@ -239,67 +300,178 @@ func _gui_input(event: InputEvent) -> void:
 			last_tap_body = hit
 			last_tap_ms = now
 		return
-	last_tap_body = ""
 	if click.position.y < size.y * 0.67:
+		# Two quick taps on empty space: back to the automatic view.
+		var now_empty := Time.get_ticks_msec()
+		if last_tap_body == "-" and now_empty - last_tap_ms <= DOUBLE_TAP_MS and click.position.distance_to(last_tap_point) < 60.0:
+			last_tap_body = ""
+			_start_zoom(_frame_id(), false)
+		else:
+			last_tap_body = "-"
+			last_tap_ms = now_empty
+			last_tap_point = click.position
 		return
+	last_tap_body = ""
 	GameState.change_warp(-1 if click.position.x < size.x * 0.5 else 1)
 
 
-## The body (of the view that is shown) under a tap, or "" (the nearest one if several are close).
+func _touch_middle() -> Vector2:
+	var total := Vector2.ZERO
+	for index in touches:
+		total += touches[index] as Vector2
+	return total / float(maxi(touches.size(), 1))
+
+
+## Distance between the first two fingers.
+func _touch_distance() -> float:
+	var points: Array = touches.values()
+	if points.size() < 2:
+		return 0.0
+	return (points[0] as Vector2).distance_to(points[1] as Vector2)
+
+
+func _view_centre() -> Vector2:
+	return Vector2(size.x * 0.5, size.y * 0.58)
+
+
+## Where a body is on the screen.
+func _screen_of(id: String) -> Vector2:
+	return _to_screen(GameState.body_rel_to(cam_body, id, time_jd) - cam_offset, _view_centre(), cam_scale)
+
+
+## The body under a tap, or "" (the nearest one if several are close).
 func _body_at(point: Vector2) -> String:
-	if shown_frame == "" or zoom_from != "" or not bodies.has(shown_frame):
+	if cam_body == "" or anim_target != "":
 		return ""
-	var centre := Vector2(size.x * 0.5, size.y * 0.58)
-	var px_per_km := _scale_of(shown_frame)
 	var best := ""
 	var best_distance := INF
-	var candidates: Array = [shown_frame] + (children[shown_frame] as Array)
-	for id in candidates:
-		var body_point := centre
-		if str(id) != shown_frame:
-			var segment := Kepler.segment_at(bodies[id]["orbit_segments"], time_jd)
-			body_point = _to_screen(Kepler.position_at(segment, time_jd), centre, px_per_km)
-		var radius_px := maxf(float(bodies[id]["radius_km"]) * px_per_km, RING_RADIUS_PX)
-		var distance := body_point.distance_to(point)
+	for id in bodies.keys():
+		var radius_px := maxf(float(bodies[id]["radius_km"]) * cam_scale, RING_RADIUS_PX)
+		var distance := _screen_of(str(id)).distance_to(point)
 		if distance <= radius_px + TAP_REACH_PX and distance < best_distance:
 			best = str(id)
 			best_distance = distance
 	return best
 
 
-## Double tap on a body: the view zooms to it. A double tap on the body the view is already centred on zooms
-## out to the body it orbits (or back to the automatic view when that is the Sun).
+## Double tap on a body: the view zooms to it. A double tap on the body the view is already on zooms out to the
+## body it orbits (back to the automatic view when that is the Sun).
 func _focus_body(id: String) -> void:
-	var target := id
-	if id == shown_frame:
-		var parent: Variant = bodies[id]["parent"]
-		target = "auto" if parent == null else str(parent)
-	var index := frames.find(target)
-	if index >= 0:
-		frame_index = index
+	var on_it := id == cam_body and absf(log(cam_scale / _fit_scale(id))) < 0.35
+	if not on_it:
+		_start_zoom(id, true)
+		return
+	var parent: Variant = bodies[id]["parent"]
+	if parent == null:
+		_start_zoom(_frame_id(), false)
+	else:
+		_start_zoom(str(parent), true)
 
 
-## Pixels per km of the view of a body: its widest orbit fits the screen (the same for every drawing).
-func _scale_of(frame_id: String) -> float:
+## Pixels per km of the view of a body: its widest orbit fits the screen.
+func _fit_scale(frame_id: String) -> float:
 	var half_extent := minf(size.x * 0.5, size.y * 0.38)
 	return half_extent * GameState.VIEW_FILL / GameState.view_extent_km(frame_id, time_jd)
 
 
-func _update_zoom(delta: float) -> void:
+## Zooms to the view of a body. keep_free: the camera then stays on that body (set by the player); otherwise it
+## goes back to following the automatic view.
+func _start_zoom(target: String, keep_free: bool) -> void:
+	anim_target = target
+	anim_free = keep_free
+	anim_t = 0.0
+	anim_body0 = cam_body
+	anim_offset0 = cam_offset
+	anim_scale0 = cam_scale
+	free_camera = false
+
+
+## Moves the camera: follows the chosen view, or zooms to it when the choice changed, or stays where the
+## player put it.
+func _update_camera(delta: float) -> void:
 	var target := _frame_id()
-	if shown_frame == "":
-		shown_frame = target
+	if cam_body == "":
+		cam_body = target
+		cam_offset = Vector2.ZERO
+		cam_scale = _fit_scale(target)
+		last_target = target
 		return
-	if zoom_from != "":
-		zoom_progress += delta / ZOOM_SECONDS
-		if zoom_progress >= 1.0 or zoom_to != target:
-			shown_frame = zoom_to
-			zoom_from = ""
-			zoom_to = ""
-	if zoom_from == "" and target != shown_frame:
-		zoom_from = shown_frame
-		zoom_to = target
-		zoom_progress = 0.0
+	if target != last_target:
+		last_target = target
+		_start_zoom(target, false)
+	if anim_target != "":
+		anim_t += delta / ZOOM_SECONDS
+		var w := smoothstep(0.0, 1.0, clampf(anim_t, 0.0, 1.0))
+		var from_point := GameState.body_rel_to(cam_body, anim_body0, time_jd) + anim_offset0
+		var to_point := GameState.body_rel_to(cam_body, anim_target, time_jd)
+		var scale_end := _fit_scale(anim_target)
+		var scale_now := exp(lerpf(log(anim_scale0), log(scale_end), w))
+		var span := 1.0 / anim_scale0 - 1.0 / scale_end
+		var k := w if absf(span) < 1.0e-30 else (1.0 / anim_scale0 - 1.0 / scale_now) / span
+		cam_offset = from_point + (to_point - from_point) * k
+		cam_scale = scale_now
+		if anim_t >= 1.0:
+			cam_body = anim_target
+			cam_offset = Vector2.ZERO
+			cam_scale = scale_end
+			free_camera = anim_free
+			anim_target = ""
+	elif not free_camera:
+		cam_offset = GameState.body_rel_to(cam_body, target, time_jd)
+		cam_scale = _fit_scale(target)
+	_rebase()
+
+
+## Pinch, wheel: zooms by a factor so that the point under the fingers (point) ends up under the new
+## position of the fingers (new_point).
+func _zoom_about(point: Vector2, factor: float, new_point: Vector2) -> void:
+	if cam_body == "" or anim_target != "":
+		return   # a zoom to a view is running
+	var centre := _view_centre()
+	var lowest := MIN_SUN_FIT * _fit_scale("sun")
+	var new_scale := clampf(cam_scale * factor, lowest, MAX_PX_PER_KM)
+	# Zooming out past the normal view of a body: the view of the body it orbits takes over (Moon -> Earth -> Sun).
+	var parent: Variant = bodies[cam_body]["parent"]
+	if factor < 1.0 and parent != null and new_scale < SNAP_OUT * _fit_scale(cam_body):
+		_start_zoom(str(parent), true)
+		return
+	var before := Vector2(point.x - centre.x, -(point.y - centre.y)) / cam_scale
+	var after := Vector2(new_point.x - centre.x, -(new_point.y - centre.y)) / new_scale
+	cam_offset = cam_offset + before - after
+	cam_scale = new_scale
+	free_camera = true
+	_rebase()
+
+
+## One finger drags the view: the picture moves with the finger.
+func _pan(screen_delta: Vector2) -> void:
+	if cam_body == "" or anim_target != "":
+		return
+	cam_offset -= Vector2(screen_delta.x, -screen_delta.y) / cam_scale
+	free_camera = true
+	_rebase()
+
+
+## The camera is counted from the body whose own view has about the scale it has now (its parent, itself or a
+## child it is near), so that the numbers stay small. Nothing changes on the screen.
+func _rebase() -> void:
+	var best := cam_body
+	var best_score := absf(log(cam_scale / _fit_scale(cam_body)))
+	var candidates: Array = (children[cam_body] as Array).duplicate()
+	var parent: Variant = bodies[cam_body]["parent"]
+	if parent != null:
+		candidates.append(str(parent))
+	for id in candidates:
+		var rel := GameState.body_rel_to(cam_body, str(id), time_jd)
+		if str(id) != str(parent) and (cam_offset - rel).length() > 1.5 * GameState.view_radius_km(str(id), time_jd):
+			continue   # a child the camera is not near
+		var score := absf(log(cam_scale / _fit_scale(str(id))))
+		if score < best_score - 0.5:
+			best = str(id)
+			best_score = score
+	if best != cam_body:
+		cam_offset += GameState.body_rel_to(best, cam_body, time_jd)
+		cam_body = best
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -307,8 +479,6 @@ func _unhandled_input(event: InputEvent) -> void:
 	if key == null or not key.pressed or key.echo:
 		return
 	match key.keycode:
-		KEY_TAB:
-			frame_index = (frame_index + 1) % frames.size()
 		KEY_ESCAPE:
 			_goto("res://menu.tscn")
 		KEY_SPACE:
@@ -396,6 +566,9 @@ func _on_plan() -> void:
 	if _selected_target_id() == here and not GameState.ship_in_transit():
 		GameState.target_orbits.erase(here)
 	_make_plan(false)
+	if not plan.is_empty():
+		last_target = _frame_id()
+		_start_zoom(last_target, false)   # the planner always starts from the automatic view
 
 
 ## Cancel: forgets the orbit chosen for this destination and closes the planner. A course change in flight
@@ -655,9 +828,6 @@ func _ship_abs(jd: float) -> Vector2:
 
 
 func _frame_id() -> String:
-	var choice: String = frames[frame_index]
-	if choice != "auto":
-		return choice
 	var index := _leg_index_at(time_jd)
 	var parent_id := str(legs[index]["parent"])
 	# Before departure show the system the transfer happens in (for example the Sun for a planet transfer).
@@ -691,7 +861,7 @@ func _process(delta: float) -> void:
 		add_child(lost_overlay)
 		lost_overlay.play(str(event["text"]), bool(event["burn"]))
 	_update_auto_frame()
-	_update_zoom(delta)
+	_update_camera(delta)
 	if picker_origin != _picker_key():
 		_fill_destinations(_selected_target_id())
 	_update_ui()
@@ -741,7 +911,6 @@ func _update_ui() -> void:
 	shield_button.visible = at_yard and GameState.shield_used_mj_m2 > 0.0
 	shield_button.disabled = GameState.shield_replace_problem() != ""
 	bar.set_design_visible(GameState.design_available(frame_id))
-	bar.set_view_text("View: " + str(frames[frame_index]))
 	bar.refresh()
 	info_label.text = _info_bbcode(_info_text())
 
@@ -865,36 +1034,46 @@ func _info_text() -> String:
 # ---------------------------------------------------------------- drawing
 
 func _draw() -> void:
-	if shown_frame == "":
+	if cam_body == "":
 		return
-	var centre := Vector2(size.x * 0.5, size.y * 0.58)
-	if zoom_from == "":
-		scene_alpha = 1.0
-		_draw_scene(shown_frame, centre, _scale_of(shown_frame))
-		return
-	# Zooming between two views: the camera moves from one body to the other while the scale changes smoothly
-	# (in steps of equal ratio); the scene of the view it leaves fades out and the scene it goes to fades in.
-	var w := smoothstep(0.0, 1.0, clampf(zoom_progress, 0.0, 1.0))
-	var scale_from := _scale_of(zoom_from)
-	var scale_to := _scale_of(zoom_to)
-	var px_per_km := exp(lerpf(log(scale_from), log(scale_to), w))
-	var offset := GameState.body_abs(zoom_to, time_jd) - GameState.body_abs(zoom_from, time_jd)
-	var span := 1.0 / scale_from - 1.0 / scale_to
-	var k := 0.0 if absf(span) < 1.0e-30 else (1.0 / scale_from - 1.0 / px_per_km) / span
-	var camera := offset * k
-	scene_alpha = 1.0 - w
-	_draw_scene(zoom_from, _to_screen(-camera, centre, px_per_km), px_per_km)
-	scene_alpha = w
-	_draw_scene(zoom_to, _to_screen(offset - camera, centre, px_per_km), px_per_km)
-	scene_alpha = 1.0
+	var centre := _view_centre()
+	var half_extent := minf(size.x * 0.5, size.y * 0.38)
+	# The scenes of the camera's body, of the body it orbits and of its children are drawn together; each fades
+	# in when its view gets big enough to see and its orbit lines fade out when it is far bigger than the screen.
+	var scene_ids: Array = []
+	var parent: Variant = bodies[cam_body]["parent"]
+	if parent != null:
+		scene_ids.append(str(parent))
+	scene_ids.append(cam_body)
+	scene_ids.append_array(children[cam_body])
+	for id in scene_ids:
+		var radius_px := GameState.view_radius_km(str(id), time_jd) * cam_scale
+		var visible_enough := smoothstep(16.0, 60.0, radius_px)
+		var too_big := 1.0 - smoothstep(1.6 * half_extent, 5.0 * half_extent, radius_px)
+		line_alpha = visible_enough * too_big
+		marker_alpha = visible_enough
+		if line_alpha > 0.01 or marker_alpha > 0.01:
+			_draw_scene(str(id), _screen_of(str(id)), cam_scale)
+	line_alpha = 1.0
+	marker_alpha = 1.0
+	if GameState.ship_lost:
+		return   # the ship and its course are gone
+	var p := _to_screen(GameState.ship_rel(cam_body, time_jd) - cam_offset, centre, cam_scale)
+	draw_colored_polygon(PackedVector2Array([p + Vector2(0, -7), p + Vector2(6, 5), p + Vector2(-6, 5)]), Color.WHITE)
+	draw_string(ThemeDB.fallback_font, p + Vector2(10, 22), GameState.ship_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color.WHITE)
 
 
-## The faded colour for the scene being drawn.
+## The faded colour of an orbit line, and of a marker (a body, its name).
 func _fade(colour: Color) -> Color:
-	return Color(colour.r, colour.g, colour.b, colour.a * scene_alpha)
+	return Color(colour.r, colour.g, colour.b, colour.a * line_alpha)
 
 
-## Draws the view of one body: centre is where the body is on the screen, px_per_km the scale.
+func _mfade(colour: Color) -> Color:
+	return Color(colour.r, colour.g, colour.b, colour.a * marker_alpha)
+
+
+## Draws the view of one body (its children's orbits, the routes and the ship's orbit around it, the bodies):
+## centre is where the body is on the screen, px_per_km the scale.
 func _draw_scene(frame_id: String, centre: Vector2, px_per_km: float) -> void:
 	var kid_ids: Array = children[frame_id]
 	var leg: Dictionary = legs[_leg_index_at(time_jd)]
@@ -931,13 +1110,6 @@ func _draw_scene(frame_id: String, centre: Vector2, px_per_km: float) -> void:
 	for kid_id in kid_ids:
 		var segment := Kepler.segment_at(bodies[kid_id]["orbit_segments"], time_jd)
 		_draw_body(kid_id, _to_screen(Kepler.position_at(segment, time_jd), centre, px_per_km), px_per_km)
-
-	if GameState.ship_lost:
-		return   # the ship and its course are gone
-	var ship_local := GameState.ship_rel(frame_id, time_jd)
-	var p := _to_screen(ship_local, centre, px_per_km)
-	draw_colored_polygon(PackedVector2Array([p + Vector2(0, -7), p + Vector2(6, 5), p + Vector2(-6, 5)]), _fade(Color.WHITE))
-	draw_string(ThemeDB.fallback_font, p + Vector2(10, 22), GameState.ship_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, _fade(Color.WHITE))
 
 
 ## The parts of the planned route that lie inside the local view of a body: the escape from the body the ship
@@ -993,13 +1165,13 @@ func _to_screen(position_km: Vector2, centre: Vector2, px_per_km: float) -> Vect
 func _draw_body(id: String, screen_position: Vector2, px_per_km: float) -> void:
 	var body: Dictionary = bodies[id]
 	var radius_px := maxf(MIN_BODY_RADIUS_PX, float(body["radius_km"]) * px_per_km)
-	var colour := _fade(Color.html(body["draw_color"]))
+	var colour := _mfade(Color.html(body["draw_color"]))
 	draw_circle(screen_position, radius_px, colour)
 	if radius_px < RING_RADIUS_PX:
 		draw_arc(screen_position, RING_RADIUS_PX, 0.0, TAU, 32, colour, 1.5, true)
 		radius_px = RING_RADIUS_PX
 	var facility_count := GameState.facilities_at(id).size()
 	for n in facility_count:
-		draw_rect(Rect2(screen_position + Vector2(-radius_px - 9.0 - 9.0 * n, -radius_px - 9.0), Vector2(7, 7)), _fade(Color(1.0, 0.6, 0.2)))
+		draw_rect(Rect2(screen_position + Vector2(-radius_px - 9.0 - 9.0 * n, -radius_px - 9.0), Vector2(7, 7)), _mfade(Color(1.0, 0.6, 0.2)))
 	draw_string(ThemeDB.fallback_font, screen_position + Vector2(radius_px + 4.0, 5.0), body["name"],
-			HORIZONTAL_ALIGNMENT_LEFT, -1, 16, _fade(Color(1, 1, 1, 0.8)))
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 16, _mfade(Color(1, 1, 1, 0.8)))

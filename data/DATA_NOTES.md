@@ -250,3 +250,31 @@ The top bar shows "axis" again (periapsis direction). 10g and the first 10h atte
   view is centred on zooms out to the body it orbits (to "auto" for the Sun). A tap on a body does not change the warp any more; taps elsewhere
   in the bottom third still do.
 - Not done yet: pinch zoom and panning by hand, and the automatic widening of the view when doing that.
+
+## Step 10p – pinch zoom (camera instead of fixed frames)
+- The view is now a camera: `cam_body` + `cam_offset` (km, the point at the screen centre relative to that body) + `cam_scale` (px/km).
+  Zooming to a view (double tap, auto switching, View button) animates the camera (`_update_camera`, `_start_zoom`): scale in equal ratios,
+  position linear in 1/scale; this replaces the two-scene cross-fade of 10o.
+- Pinch with two fingers (or the mouse wheel on the PC) zooms about the point under the fingers and moves the view with them
+  (`_zoom_about`); the view is then "free" (top bar: "View: free") and stays where it is. Pressing View once brings it back to the chosen
+  view; a double tap on a body zooms to it; a change of the automatic view zooms there as before. Limits: MAX_PX_PER_KM (2 px/km) and
+  MIN_SUN_FIT (a quarter of the scale that fits the Sun's system).
+- `_draw` draws the scene of the camera's body, of its parent and of its children together (`_draw_scene`); a scene fades in when its view
+  radius is more than ~16-60 px on the screen, its orbit lines fade out when it is much bigger than the screen (markers stay).
+  `_rebase` moves the camera's reference body to the one whose own view has about the current scale (nothing changes on the screen).
+- `GameState.body_rel_to(from, to, jd)` gives the position of one body relative to another with small numbers.
+- A tap now counts when the finger is lifted, and not right after a pinch.
+
+## Step 10q – no View button, always the automatic view
+- The View button is gone (TopBar.setup with "" leaves it out); the chosen view is always the automatic one (`_frame_id()`), the camera
+  follows it and zooms when it changes. Pinch / wheel / double tap move the camera by hand ("free") until the automatic view changes or until
+  two quick taps on empty space bring the camera back to the automatic view.
+- Double tap on a body: zoom to it (the camera then stays on it). Double tap on the body the camera is already on: zoom out to the body it
+  orbits (for the Sun: back to the automatic view).
+
+## Step 10r – drag to move, snap out to the parent's view, planner resets the view
+- One finger (or the left mouse button) drags the view (`_pan`, from InputEventMouseMotion, which Godot also makes from a single touch; it is
+  ignored while two fingers are down). After DRAG_START_PX the gesture is a drag, the release is not a tap.
+- Zooming out by hand below SNAP_OUT (0.8) of the normal view of the body the camera is on zooms (animated) to the normal view of the body it
+  orbits: Moon -> Earth -> Sun. Pinch input is ignored while a zoom to a view is running.
+- Pressing Plan (a draft was made) zooms back to the automatic view.

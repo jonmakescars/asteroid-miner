@@ -776,6 +776,39 @@ static func body_abs(id: String, jd: float) -> Vector2:
 	return total
 
 
+## The position of body to_id relative to body from_id (km), summed along the path through their common
+## ancestor so that nearby bodies give small numbers (no precision lost to the Sun-centred coordinates).
+static func body_rel_to(from_id: String, to_id: String, jd: float) -> Vector2:
+	var from_chain: Array = _ancestors(from_id)
+	var to_chain: Array = _ancestors(to_id)
+	var common := ""
+	for id in to_chain:
+		if from_chain.has(id):
+			common = str(id)
+			break
+	var from_pos := Vector2.ZERO
+	for id in from_chain:
+		if str(id) == common:
+			break
+		from_pos += body_rel(str(id), jd)
+	var to_pos := Vector2.ZERO
+	for id in to_chain:
+		if str(id) == common:
+			break
+		to_pos += body_rel(str(id), jd)
+	return to_pos - from_pos
+
+
+## The body and the bodies it orbits, from the body up to the root.
+static func _ancestors(id: String) -> Array:
+	var chain: Array = []
+	var current: Variant = id
+	while current != null:
+		chain.append(str(current))
+		current = bodies[str(current)]["parent"]
+	return chain
+
+
 static func leg_index_at(jd: float) -> int:
 	var chosen := 0
 	for i in legs.size():
