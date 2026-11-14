@@ -14,14 +14,16 @@ const LATE_LAUNCH_DAYS := 300.0 / 86400.0  # a plan can still be launched this l
 const MIN_LAUNCH_DELAY_DAYS := 10.0 / 86400.0  # a plan never starts earlier than this after "now"
 const MIN_BODY_RADIUS_PX := 3.0
 const RING_RADIUS_PX := 10.0
+const RING_BELOW_PX := 2.0         # a body whose true radius is smaller than this many pixels gets a ring around it
 const ORBIT_SAMPLES := 160
 const MOBILE_UI_SCALE := 2.0
 const ZOOM_SECONDS := 0.7          # a change of the view is a zoom of this many (real) seconds
 const DOUBLE_TAP_MS := 400         # two taps on the same body within this time focus the view on it
 const MAX_PX_PER_KM := 2.0         # the most the view can be zoomed in by hand
 const MIN_SUN_FIT := 0.25          # the most it can be zoomed out: this fraction of the scale that fits the Sun's system
+const PAN_DELAY_MS := 500          # one-finger dragging is blocked this long after a zoom
 const DRAG_START_PX := 12.0        # a finger that moves this far is dragging the view, not tapping
-const SNAP_OUT := 0.8              # zooming out below this fraction of a body's own view switches to the view of the body it orbits
+const SNAP_OUT := 0.6667           # zooming out until the view is 50% wider than a body's own view switches to the view of the body it orbits
 const TAP_REACH_PX := 26.0         # a tap this close to a body (besides its size) counts as a tap on it
 const VIEW_HYSTERESIS := 1.15     # the auto view switches outwards at this multiple of the distance it switched in at
 
@@ -262,13 +264,19 @@ func _gui_input(event: InputEvent) -> void:
 		return
 	var motion := event as InputEventMouseMotion
 	if motion != null:
-		# One finger (or the left button) drags the view.
-		if mouse_down and touches.size() < 2 and anim_target == "":
-			if not dragged and motion.position.distance_to(press_point) > DRAG_START_PX:
-				dragged = true
-				_pan(motion.position - press_point)
-			elif dragged:
-				_pan(motion.relative)
+		# One finger (or the left button) drags the view, but not while two fingers are down or shortly after a zoom
+		# (so that lifting one finger a little earlier than the other does not move the view); a drag then starts from
+		# where the finger is.
+		if mouse_down:
+			if touches.size() >= 2 or Time.get_ticks_msec() - gesture_ms < PAN_DELAY_MS:
+				press_point = motion.position
+				dragged = false
+			elif anim_target == "":
+				if not dragged and motion.position.distance_to(press_point) > DRAG_START_PX:
+					dragged = true
+					_pan(motion.position - press_point)
+				elif dragged:
+					_pan(motion.relative)
 		return
 	var click := event as InputEventMouseButton
 	if click == null:
@@ -1058,9 +1066,32 @@ func _draw() -> void:
 	marker_alpha = 1.0
 	if GameState.ship_lost:
 		return   # the ship and its course are gone
+	_draw_ship_orbit(half_extent)
 	var p := _to_screen(GameState.ship_rel(cam_body, time_jd) - cam_offset, centre, cam_scale)
 	draw_colored_polygon(PackedVector2Array([p + Vector2(0, -7), p + Vector2(6, 5), p + Vector2(-6, 5)]), Color.WHITE)
 	draw_string(ThemeDB.fallback_font, p + Vector2(10, 22), GameState.ship_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color.WHITE)
+
+
+## The orbit the ship is in (green); while a burn or an aerobraking pass changes it, the orbit morphs. It is always
+## drawn, whatever the scene it belongs to shows, unless it is so small that it cannot be told from the body, or so
+## much bigger than the screen that a line through its points would be wrong.
+func _draw_ship_orbit(half_extent: float) -> void:
+	var leg: Dictionary = legs[_leg_index_at(time_jd)]
+	var parent_id := str(leg["parent"])
+	var segment: Dictionary = leg["segment"]
+	var morph := GameState.morph_at(time_jd)
+	if not morph.is_empty():
+		parent_id = str(morph["parent"])
+		segment = morph["segment"]
+	var apoapsis := float(segment["semi_major_axis_km"]) * (1.0 + float(segment["eccentricity"]))
+	var above_body_px := (apoapsis - float(bodies[parent_id]["radius_km"])) * cam_scale
+	if above_body_px * 1.0 < 2.0 or apoapsis * cam_scale > 8.0 * half_extent:
+		return
+	var origin := _screen_of(parent_id)
+	var ring := PackedVector2Array()
+	for point in Kepler.orbit_points(segment, 128):
+		ring.append(_to_screen(point, origin, cam_scale))
+	draw_polyline(ring, Color(0.3, 1.0, 0.4, 0.85 * smoothstep(2.0, 6.0, above_body_px)), 1.5, true)
 
 
 ## The faded colour of an orbit line, and of a marker (a body, its name).
@@ -1076,8 +1107,6 @@ func _mfade(colour: Color) -> Color:
 ## centre is where the body is on the screen, px_per_km the scale.
 func _draw_scene(frame_id: String, centre: Vector2, px_per_km: float) -> void:
 	var kid_ids: Array = children[frame_id]
-	var leg: Dictionary = legs[_leg_index_at(time_jd)]
-
 	for kid_id in kid_ids:
 		var segment := Kepler.segment_at(bodies[kid_id]["orbit_segments"], time_jd)
 		var line := PackedVector2Array()
@@ -1093,19 +1122,6 @@ func _draw_scene(frame_id: String, centre: Vector2, px_per_km: float) -> void:
 			path.append(_to_screen(Kepler.position_at(plan["transfer_segment"], t), centre, px_per_km))
 		draw_polyline(path, _fade(Color(0.4, 0.9, 1.0, 0.9)), 1.5, true)
 	_draw_local_route(frame_id, centre, px_per_km)
-	# The orbit the ship is in; while a burn or an aerobraking pass changes it, the orbit morphs.
-	var ring_segment: Dictionary = {}
-	var morph := GameState.morph_at(time_jd)
-	if not morph.is_empty() and str(morph["parent"]) == frame_id:
-		ring_segment = morph["segment"]
-	elif leg["parent"] == frame_id:
-		ring_segment = leg["segment"]
-	if not ring_segment.is_empty() and not GameState.ship_lost:
-		var ring := PackedVector2Array()
-		for point in Kepler.orbit_points(ring_segment, 64):
-			ring.append(_to_screen(point, centre, px_per_km))
-		draw_polyline(ring, _fade(Color(0.4, 0.9, 1.0, 0.6)), 1.0, true)
-
 	_draw_body(frame_id, centre, px_per_km)
 	for kid_id in kid_ids:
 		var segment := Kepler.segment_at(bodies[kid_id]["orbit_segments"], time_jd)
@@ -1164,10 +1180,11 @@ func _to_screen(position_km: Vector2, centre: Vector2, px_per_km: float) -> Vect
 
 func _draw_body(id: String, screen_position: Vector2, px_per_km: float) -> void:
 	var body: Dictionary = bodies[id]
-	var radius_px := maxf(MIN_BODY_RADIUS_PX, float(body["radius_km"]) * px_per_km)
+	var true_radius_px := float(body["radius_km"]) * px_per_km
+	var radius_px := maxf(MIN_BODY_RADIUS_PX, true_radius_px)
 	var colour := _mfade(Color.html(body["draw_color"]))
 	draw_circle(screen_position, radius_px, colour)
-	if radius_px < RING_RADIUS_PX:
+	if true_radius_px < RING_BELOW_PX:
 		draw_arc(screen_position, RING_RADIUS_PX, 0.0, TAU, 32, colour, 1.5, true)
 		radius_px = RING_RADIUS_PX
 	var facility_count := GameState.facilities_at(id).size()

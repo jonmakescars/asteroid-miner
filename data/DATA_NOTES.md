@@ -278,3 +278,17 @@ The top bar shows "axis" again (periapsis direction). 10g and the first 10h atte
 - Zooming out by hand below SNAP_OUT (0.8) of the normal view of the body the camera is on zooms (animated) to the normal view of the body it
   orbits: Moon -> Earth -> Sun. Pinch input is ignored while a zoom to a view is running.
 - Pressing Plan (a draft was made) zooms back to the automatic view.
+
+## Step 10s – ship orbit always visible and green, smaller rings
+- The ship's orbit (and the morphing orbit) is drawn in `_draw_ship_orbit`, not inside the scene of its body, so it no longer fades away when
+  the scene is much bigger than the screen (zoomed in at Earth). It is hidden only when it is less than ~2 px above the body (fades in
+  2-6 px) or more than 8 half-screens wide. Colour green; planned courses stay blue.
+- The ring around small bodies is drawn when the body's true radius is below RING_BELOW_PX (2 px), so Earth has none in its default view
+  (about 4 px), while the Moon in the Earth view and the moons of Mars still have one.
+
+## Step 10t – snap-out threshold
+- SNAP_OUT is 1/1.5: the view zooms out to the parent's view once it is 50% wider than the body's own default view (was 20%).
+
+## Step 10u – drag delay after zooming
+- One-finger dragging is blocked for PAN_DELAY_MS (0.5 s) after the last pinch / wheel movement; while blocked the drag start point follows the
+  finger, so that the view does not jump when one finger leaves the screen a little before the other.
