@@ -148,3 +148,72 @@ Kilometres, days (Julian Date), degrees, GM in km³/s², mass in kg. The game st
 - So arriving at Mars, Ceres or Earth shows the local view as soon as the ship is that close, not at the insertion burn.
 - Not done yet: the same rule for manual panning/zooming, and the transfer route is only drawn in the view of the frame it was
   planned in (so right after leaving Earth the route appears once the view has switched out to the Sun).
+
+## Step 10b: local route, warp slowdown, orbit morph
+- Local route: the model jumps from the orbit around the origin to the transfer orbit (and from it to the orbit around
+  the target) at one point. `GameState.transfer_leg_for_plan` stores that jump (`from_offset`/`to_offset`, with
+  `from_ref`/`to_ref`) in the transfer leg; `leg_rel_with_offsets` fades it out over 6x its size, so the ship leaves
+  the parking orbit and arrives at the first orbit without a jump. The map draws the same path (`_draw_local_route`) in the
+  view of the origin body (escape) and of the target body (insertion), plus the orbits the plan creates there
+  (aerobraking passes faint, final orbit stronger). Course changes in flight have no escape part.
+- Warp: when the ship is about to get inside the view of a smaller body (smallest_view), time is stopped at the moment it
+  gets in and the warp drops to AERO_WARP_INDEX (1 min/s). Leaving a view does not change the warp.
+- Morph: legs have `morph_days` = burn time of the burn (`GameState.burn_days`, from the ship's thrust: new
+  `thrust_kn` in the saved design = thrust of stage 1, default 1000 kN until the design screen has been opened) or the
+  time of one aerobraking pass (`aero["pass_days"]`). Around the start of such a leg (centred on it) the shown orbit goes
+  linearly from the old periapsis/apoapsis/axis to the new ones (`GameState.morph_at`); the top bar numbers follow. At
+  an insertion the orbit shrinks from a wide ellipse with the same periapsis. No morph for departure to another body.
+- Aerobraking warnings: the planner keeps 20% of the remaining shield in reserve (HEAT_MARGIN 0.8). Below that margin it
+  suggests propulsive capture (message now says so); if the player switches aerobraking on anyway, the plan shows a
+  "Warning: heat shield will have only X% left" line.
+
+## Step 10c: tangential escape/insertion, morph slowdown
+- Near the origin / target body the displayed path is now a hyperbola (`GameState._hyperbola`, Kepler's equation for H) with
+  its periapsis at the point where the ship leaves the parking orbit / enters the first orbit, so it joins that orbit
+  tangentially, and the speed at infinity of the transfer (arrival: sqrt(2 * arrival_energy); departure: the speed of the
+  transfer relative to the body). Far away the transfer's own path is used, turned about the body by `delta` so that it comes
+  in / goes out along the hyperbola's asymptote; the two are blended between 3 and 12 periapsis radii (`_blend_hyperbola`). It is only
+  used when the transfer starts / ends at the body itself; otherwise (for example a moon leaving for another planet) the older
+  faded offset is used. The ship follows the same path, with the periapsis at the burn time.
+- `_leg_rel` subtracts the body's position inside the leg's own system when the view body is a moon of the leg's parent
+  (full precision for Phobos/Deimos views).
+- Warp drops to 1 min/s at the start of every visible morph (burns and aerobraking passes that change the orbit), so the morph
+  can be watched at high warp. Departure for another body has no morph and no slowdown.
+
+## Orbit change from a circular orbit (10d)
+- The burn happens where the ship is, so the transfer ellipse's axis is now taken from the ship's position at the burn (it was the
+  circular orbit's arbitrary axis, which showed the ship on an offset ellipse until the second burn). The final circular
+  orbit uses the same axis, so the ship continues from where it is. Non-circular orbits are unchanged (burns at the apsides).
+
+## Orbit change ends with its last burn (10e)
+- When only one apsis changes (second burn below 0.1 m/s), the orbit change is a single burn: the plan ends one second after it
+  (the ship is at the burn point on the new orbit) instead of waiting half an orbit for a zero burn at the other apsis.
+
+## Orbit change from a circular orbit to an orbit with an axis (10f)
+- The axis offset counts from the circular orbit's axis (0 deg, as the top bar shows axes). The burns now happen where the new
+  periapsis / apoapsis will be, so the ship first flies to that point (no "orbiting through the body"). No extra axis-turn burn.
+- If the first burn would be zero (only the second apsis changes), it is skipped: the mission is one burn, at whichever apsis
+  point of the new orbit the ship reaches first, and the plan ends with it.
+
+## Step 10h – revert of 10g
+The offset is the angle of the PERIAPSIS axis again (0 deg = right, counter-clockwise), for orbit changes and transfers alike, as in 10f.
+The top bar shows "axis" again (periapsis direction). 10g and the first 10h attempt were withdrawn.
+
+## Step 10i – approach/escape path lies on the real hyperbola line
+- The far part of an insertion / escape path (the transfer's own path) used to aim at the body's centre, so near the body it
+  had to bend sharply into the hyperbola ("hook"). The far path is now also moved sideways by the impact parameter
+  (`hyp["shift"]`, `_asymptote_shift`), so it lies on the asymptote of the hyperbola that touches the orbit tangentially.
+- The blend zone now reaches from 3 rp out to max(12 rp, 6 a), so the hyperbola takes over smoothly.
+
+## Step 10j – view entry found at any warp
+- The view-switch logic is generic (every body: view radius = widest child orbit / 0.9), but `_next_view_entry` only compared the
+  views at the start and end of a time step. At a high warp the ship can fly through a small view (Mars: ~26,000 km) and out
+  again within one step, so the slowdown never triggered and the view only changed when the aerobraking pass stopped the warp.
+  Earth/Moon have big views, so the ship was still inside at the end of the step. The interval is now sampled (every 0.01 day, at
+  most 160 samples) and the entry time is found by bisection.
+
+## Step 10k – earliest stop event wins
+- Real cause of the missed view change: `advance()` handled the stop events one after the other (aerobraking entry, morph start,
+  view entry) and only looked at the next one if the previous had not already slowed the warp. At a high warp the pass/morph start
+  came first, time jumped straight to it and the (earlier) view entry was never considered. Now all three are computed for the
+  step and the earliest is used, so the ship stops where it enters the smaller view (the view then switches there).

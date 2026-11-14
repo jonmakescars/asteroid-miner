@@ -210,13 +210,28 @@ static func _plan_orbit_change(body_id: String, segment: Dictionary, t_start: fl
 	var circular := OrbitControl.is_circular(rp, ra)
 	var raise_apoapsis_first := ra < rp_t   # then burn at the periapsis, otherwise at the apoapsis
 	var t_burn := t_start
+	var middle_axis := axis
 	if not circular:
 		var target_anomaly := 0.0 if raise_apoapsis_first else 180.0
 		var anomaly := float(segment["mean_anomaly_deg"]) + float(segment["mean_motion_deg_per_day"]) * (t_start - float(segment["epoch_jd"]))
 		t_burn = t_start + fposmod(target_anomaly - anomaly, 360.0) / float(segment["mean_motion_deg_per_day"])
+	elif not OrbitControl.is_circular(rp_t, ra_t):
+		# From a circular orbit to one with an axis: the new periapsis (and apoapsis) must lie on the target axis, so
+		# the first burn happens where the new periapsis (higher apoapsis) or apoapsis (lower periapsis) will be.
+		# The axis offset counts from the axis the circular orbit has (0 deg in the data).
+		middle_axis = axis + float(orbit["offset_deg"])
+		var burn_angle := middle_axis if raise_apoapsis_first else middle_axis + 180.0
+		var angle_now := rad_to_deg(Kepler.position_at(segment, t_start).angle())
+		t_burn = t_start + fposmod(burn_angle - angle_now, 360.0) / float(segment["mean_motion_deg_per_day"])
+	else:
+		# Circular to circular: there is no axis, so the burn happens where the ship is, and the new ellipse touches
+		# the old orbit there (periapsis at the ship for a higher apoapsis, apoapsis at the ship for a lower periapsis).
+		var ship_angle := rad_to_deg(Kepler.position_at(segment, t_burn).angle())
+		axis = ship_angle if raise_apoapsis_first else ship_angle - 180.0
+		middle_axis = axis
 	var middle_rp := rp if raise_apoapsis_first else rp_t
 	var middle_ra := ra_t if raise_apoapsis_first else ra
-	var middle := AeroBraking._ellipse(gm, middle_rp, middle_ra, t_burn, axis, 0.0 if raise_apoapsis_first else 180.0)
+	var middle := AeroBraking._ellipse(gm, middle_rp, middle_ra, t_burn, middle_axis, 0.0 if raise_apoapsis_first else 180.0)
 	var half_days := TAU * sqrt(pow(0.5 * (middle_rp + middle_ra), 3.0) / gm) / 86400.0 * 0.5
 	var dv_first: float
 	var dv_second: float
@@ -226,14 +241,23 @@ static func _plan_orbit_change(body_id: String, segment: Dictionary, t_start: fl
 	else:
 		dv_first = absf(AeroBraking._speed_at_apoapsis(gm, rp_t, ra) - AeroBraking._speed_at_apoapsis(gm, rp, ra))
 		dv_second = absf(AeroBraking._speed_at_periapsis(gm, rp_t, ra_t) - AeroBraking._speed_at_periapsis(gm, rp_t, ra))
+	var t_departure := t_burn
+	var t_arrival := t_burn + half_days
+	if dv_first < 0.0001:
+		# Only the second burn changes anything (for example from a circular orbit to one with a higher apoapsis): do
+		# not wait for a first burn of zero. The second burn happens at the other apsis of the middle ellipse; take the
+		# one the ship reaches first.
+		t_arrival = t_burn - half_days if t_burn - half_days >= t_start else t_burn + half_days
+		t_departure = maxf(t_arrival - 1.0 / 86400.0, t_start)
+		middle = AeroBraking._ellipse(gm, middle_rp, middle_ra, t_arrival, middle_axis, 180.0 if raise_apoapsis_first else 0.0)
 	var plan := {
 		"origin_id": body_id,
 		"target_id": body_id,
 		"target_name": body["name"],
 		"frame": body_id,
-		"t_dep": t_burn,
-		"t_arr": t_burn + half_days,
-		"flight_days": half_days,
+		"t_dep": t_departure,
+		"t_arr": t_arrival,
+		"flight_days": t_arrival - t_departure,
 		"dv_departure": dv_first,
 		"dv_arrival": dv_second,
 		"transfer_segment": middle,
@@ -256,6 +280,17 @@ static func _plan_orbit_change(body_id: String, segment: Dictionary, t_start: fl
 	plan["aero"] = {"available": false, "enabled": false, "outcome": "ok", "message": ""}
 	AeroBraking._use_propulsive_capture(plan)
 	var final_anomaly := 180.0 if raise_apoapsis_first else 0.0
+	if circular:
+		plan["dv_arrival"] = dv_second   # from a circular orbit the axis needs no extra burn
+	if float(plan["dv_arrival"]) < 0.0001:
+		# Only one apsis changes (for example raising the periapsis with the same apoapsis): the first burn already
+		# gives the final orbit, there is no second burn to wait for. The mission ends with the first burn.
+		plan["t_arr"] = t_departure + 1.0 / 86400.0
+		plan["flight_days"] = 1.0 / 86400.0
+		plan["t_end"] = plan["t_arr"]
+		plan["dv_arrival"] = 0.0
+		plan["capture_legs"][0]["t_start"] = plan["t_arr"]
+		final_anomaly = 0.0 if raise_apoapsis_first else 180.0   # the ship is where the burn was
 	plan["capture_legs"][0]["segment"] = AeroBraking._ellipse(gm, rp_t, ra_t, float(plan["t_arr"]),
 			AeroBraking._axis_deg(plan), final_anomaly)
 	return plan

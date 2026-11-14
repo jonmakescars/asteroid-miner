@@ -16,7 +16,6 @@ const MIN_BODY_RADIUS_PX := 3.0
 const RING_RADIUS_PX := 10.0
 const ORBIT_SAMPLES := 160
 const MOBILE_UI_SCALE := 2.0
-const VIEW_FILL := 0.9            # share of the half screen width the widest orbit of a view fills
 const VIEW_HYSTERESIS := 1.15     # the auto view switches outwards at this multiple of the distance it switched in at
 
 # The game state is shared between screens (see GameState); these properties are shortcuts to it.
@@ -425,9 +424,8 @@ func _on_abort() -> void:
 func _do_launch() -> void:
 	if plan.is_empty():
 		return
-	var transfer_leg := {"parent": plan["frame"], "segment": plan["transfer_segment"], "t_start": plan["t_dep"],
-			"label": ("Orbit change around %s" if plan.get("orbit_change", false) else "Transfer orbit to %s") % plan["target_name"],
-			"kind": "transfer"}
+	var transfer_leg := GameState.transfer_leg_for_plan(plan, GameState.parked_leg())
+	GameState.set_morph_times(plan, transfer_leg)
 	plan["committed"] = true
 	if plan.get("midflight", false):
 		# A course change: the flight so far stays, the old plan's later legs are replaced. No launch cost.
@@ -585,42 +583,14 @@ func _frame_id() -> String:
 	return auto_frame if auto_frame != "" else parent_id
 
 
-## Distance (km) from a body's centre that the view of that body shows at the edge of a portrait screen.
-func _view_radius_km(frame_id: String) -> float:
-	return _extent_km(frame_id) / VIEW_FILL
-
-
-## The distance the view of a frame is scaled to: the widest orbit of its children (or of the ship, if the
-## frame has no children), at least four body radii.
-func _extent_km(frame_id: String) -> float:
-	var kid_ids: Array = children[frame_id]
-	var extent := float(bodies[frame_id]["radius_km"]) * 4.0
-	var leg: Dictionary = legs[_leg_index_at(time_jd)]
-	if kid_ids.is_empty() and leg["parent"] == frame_id:
-		extent = maxf(extent, float(leg["segment"]["semi_major_axis_km"]) * 1.5)
-	for kid_id in kid_ids:
-		var segment := Kepler.segment_at(bodies[kid_id]["orbit_segments"], time_jd)
-		extent = maxf(extent, float(segment["semi_major_axis_km"]) * (1.0 + float(segment["eccentricity"])))
-	return extent
-
-
 ## Chooses the body whose view the "auto" setting shows: the smallest view that still contains the ship. A view
 ## is entered when the ship is inside the distance it shows at the edge of a portrait screen, and left only
 ## when the ship is VIEW_HYSTERESIS times further out (so it does not flicker at the border).
 func _update_auto_frame() -> void:
-	var best := ""
-	var best_radius := INF
-	for id in bodies.keys():
-		var radius := _view_radius_km(str(id))
-		if radius >= best_radius:
-			continue
-		if GameState.ship_rel(str(id), time_jd).length() <= radius:
-			best = str(id)
-			best_radius = radius
-	if best == "":
-		best = "sun"
+	var best := GameState.smallest_view(time_jd)
+	var best_radius := GameState.view_radius_km(best, time_jd)
 	if auto_frame != "" and bodies.has(auto_frame) and best != auto_frame:
-		var current_radius := _view_radius_km(auto_frame)
+		var current_radius := GameState.view_radius_km(auto_frame, time_jd)
 		var still_inside := GameState.ship_rel(auto_frame, time_jd).length() <= current_radius * VIEW_HYSTERESIS
 		if still_inside and best_radius >= current_radius:
 			return   # keep the view: the ship has just left it, but not far enough to switch out
@@ -729,7 +699,8 @@ func _aero_lines() -> PackedStringArray:
 			elif float(aero["peak_g"]) > AeroBraking.G_LIMIT:
 				lines.append("Warning: the deceleration is above the limit and the ship will be damaged.")
 			elif float(aero["heat"]) > AeroBraking.HEAT_MARGIN * float(aero["shield_before"]) * AeroBraking.shield_capacity_mj_m2(GameState.ship_shield_cm):
-				lines.append("The shield is nearly used up.")
+				lines.append("Warning: the heat shield will have only %.0f%% of its capacity left, less than the %.0f%% reserve the planner keeps." % [
+						float(aero["shield_after"]) * 100.0, (1.0 - AeroBraking.HEAT_MARGIN) * 100.0])
 	if str(plan.get("outcome", "ok")) != "ok":
 		lines.append("Warning: " + str(plan["outcome_text"]))
 	if str(plan.get("warning", "")) != "":
@@ -803,8 +774,8 @@ func _draw() -> void:
 	var leg: Dictionary = legs[_leg_index_at(time_jd)]
 
 	# Scale so that the widest orbit in this frame (or the ship's orbit, if it has no children) fits.
-	var extent := _extent_km(frame_id)
-	var px_per_km := half_extent * VIEW_FILL / extent
+	var extent := GameState.view_extent_km(frame_id, time_jd)
+	var px_per_km := half_extent * GameState.VIEW_FILL / extent
 
 	for kid_id in kid_ids:
 		var segment := Kepler.segment_at(bodies[kid_id]["orbit_segments"], time_jd)
@@ -820,9 +791,17 @@ func _draw() -> void:
 			var t := float(plan["t_dep"]) + float(plan["flight_days"]) * float(i) / 80.0
 			path.append(_to_screen(Kepler.position_at(plan["transfer_segment"], t), centre, px_per_km))
 		draw_polyline(path, Color(0.4, 0.9, 1.0, 0.9), 1.5, true)
-	if leg["parent"] == frame_id:
+	_draw_local_route(frame_id, centre, px_per_km)
+	# The orbit the ship is in; while a burn or an aerobraking pass changes it, the orbit morphs.
+	var ring_segment: Dictionary = {}
+	var morph := GameState.morph_at(time_jd)
+	if not morph.is_empty() and str(morph["parent"]) == frame_id:
+		ring_segment = morph["segment"]
+	elif leg["parent"] == frame_id:
+		ring_segment = leg["segment"]
+	if not ring_segment.is_empty():
 		var ring := PackedVector2Array()
-		for point in Kepler.orbit_points(leg["segment"], 64):
+		for point in Kepler.orbit_points(ring_segment, 64):
 			ring.append(_to_screen(point, centre, px_per_km))
 		draw_polyline(ring, Color(0.4, 0.9, 1.0, 0.6), 1.0, true)
 
@@ -835,6 +814,52 @@ func _draw() -> void:
 	var p := _to_screen(ship_local, centre, px_per_km)
 	draw_colored_polygon(PackedVector2Array([p + Vector2(0, -7), p + Vector2(6, 5), p + Vector2(-6, 5)]), Color.WHITE)
 	draw_string(ThemeDB.fallback_font, p + Vector2(10, 22), GameState.ship_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color.WHITE)
+
+
+## The parts of the planned route that lie inside the local view of a body: the escape from the body the ship
+## leaves, the approach to the body it goes to, and the orbits it will have there (aerobraking passes and the
+## final orbit). The path is the same one the ship follows (GameState.leg_rel_with_offsets).
+func _draw_local_route(frame_id: String, centre: Vector2, px_per_km: float) -> void:
+	if plan.is_empty():
+		return
+	var route_colour := Color(0.4, 0.9, 1.0, 0.9)
+	if str(plan["frame"]) != frame_id:
+		var transfer_leg := GameState.plan_transfer_leg(plan)
+		if not transfer_leg.is_empty():
+			var radius_km := GameState.view_radius_km(frame_id, time_jd)
+			if str(transfer_leg.get("from_body", "")) == frame_id:
+				draw_polyline(_route_points(transfer_leg, frame_id, float(plan["t_dep"]), 1.0, radius_km, centre, px_per_km), route_colour, 1.5, true)
+			if str(transfer_leg.get("to_body", "")) == frame_id:
+				draw_polyline(_route_points(transfer_leg, frame_id, float(plan["t_arr"]), -1.0, radius_km, centre, px_per_km), route_colour, 1.5, true)
+	var captures: Array = plan.get("capture_legs", [])
+	for capture_leg in captures:
+		if str(capture_leg["parent"]) != frame_id:
+			continue
+		var ring := PackedVector2Array()
+		for point in Kepler.orbit_points(capture_leg["segment"], 64):
+			ring.append(_to_screen(point, centre, px_per_km))
+		draw_polyline(ring, Color(0.4, 0.9, 1.0, 0.7 if capture_leg["kind"] == "orbit" else 0.3), 1.0, true)
+
+
+## Points of the route near one end of a transfer: sampled at growing time steps from t_origin (forwards for
+## direction 1, backwards for -1) until the path leaves the view.
+func _route_points(leg: Dictionary, frame_id: String, t_origin: float, direction: float, radius_km: float,
+		centre: Vector2, px_per_km: float) -> PackedVector2Array:
+	var points := PackedVector2Array()
+	var t_first := float(plan["t_dep"])
+	var t_last := float(plan["t_arr"])
+	points.append(_to_screen(GameState.leg_rel_with_offsets(leg, frame_id, t_origin), centre, px_per_km))
+	var step_seconds := 60.0
+	for _k in 200:
+		var t := t_origin + direction * step_seconds / 86400.0
+		if t < t_first or t > t_last:
+			break
+		var rel := GameState.leg_rel_with_offsets(leg, frame_id, t)
+		points.append(_to_screen(rel, centre, px_per_km))
+		if rel.length() > radius_km * 1.05:
+			break
+		step_seconds *= 1.12
+	return points
 
 
 func _to_screen(position_km: Vector2, centre: Vector2, px_per_km: float) -> Vector2:

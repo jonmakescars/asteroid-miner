@@ -331,6 +331,7 @@ func _save_design(stages: Array, payload_kg: float, analysis: Dictionary, empty_
 	file.store_string(JSON.stringify({
 		"name": ship_name.strip_edges() if ship_name.strip_edges() != "" else "Unnamed ship",
 		"payload_kg": payload_kg,
+		"thrust_kn": float(stages[0]["thrust_kn"]) if not stages.is_empty() else 0.0,
 		"shield_cm": _value_of(shield_ctl),
 		"shield_area_m2": shield_area_m2,
 		"shield_mass_kg": shield_mass_kg,

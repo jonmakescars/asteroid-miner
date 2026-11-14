@@ -12,6 +12,9 @@ const DEFAULT_SHIP_DV_KMS := 10.0
 const DEFAULT_SHIP_PROPELLANT_KG := 120000.0
 const DEFAULT_SHIP_VE_MS := 3900.0   # effective exhaust velocity of the default ship
 const DEFAULT_SHIP_PAYLOAD_KG := 5000.0
+const DEFAULT_SHIP_THRUST_KN := 1000.0
+const VIEW_FILL := 0.9          # share of the half screen width that the widest orbit of a view fills
+const ROUTE_FADE_LENGTHS := 6.0  # the jump at escape / insertion fades out over this many times its size
 const DEFAULT_SHIELD_CM := 15.0
 const AERO_WARP_INDEX := 1   # time flow drops to this (1 min/s) when the ship reaches the upper atmosphere
 const WARP_STEPS := [1.0 / 86400.0, 1.0 / 1440.0, 1.0 / 24.0, 1.0, 10.0, 100.0, 1000.0]  # game days per real second
@@ -55,6 +58,7 @@ static var ship_dv_kms := DEFAULT_SHIP_DV_KMS           # capacity
 static var ship_payload_kg := DEFAULT_SHIP_PAYLOAD_KG   # cargo capacity
 static var ship_fuel_capacity_kg := DEFAULT_SHIP_PROPELLANT_KG
 static var ship_ve_ms := DEFAULT_SHIP_VE_MS
+static var ship_thrust_kn := DEFAULT_SHIP_THRUST_KN   # thrust of the first stage; sets how long burns take
 static var ship_dry_kg := DEFAULT_SHIP_PROPELLANT_KG / (exp(DEFAULT_SHIP_DV_KMS * 1000.0 / DEFAULT_SHIP_VE_MS) - 1.0) - DEFAULT_SHIP_PAYLOAD_KG
 # The heat shield: thickness, area, and the heat load (MJ/m2) it has already absorbed. Health drops when a
 # pass overloads the shield or the g limit.
@@ -152,6 +156,7 @@ static func load_ship_design() -> void:
 				ship_ve_ms = float(parsed["ve_eff_ms"])
 				# The empty ship; older saved designs only have the mass with the full payload.
 				ship_dry_kg = float(parsed.get("dry_empty_kg", maxf(float(parsed["dry_eff_kg"]) - ship_payload_kg, 100.0)))
+			ship_thrust_kn = float(parsed.get("thrust_kn", ship_thrust_kn))
 			ship_shield_cm = float(parsed.get("shield_cm", ship_shield_cm))
 			ship_shield_area_m2 = float(parsed.get("shield_area_m2", ship_shield_area_m2))
 	# Until the ship has used any fuel the tanks are full; afterwards a new design can only lower the level.
@@ -185,6 +190,16 @@ static func dv_left_kms() -> float:
 	return dv_for_fuel(ship_fuel_kg)
 
 
+## How long (game days) a burn of dv_kms takes with the ship's thrust (at least one second).
+static func burn_days(dv_kms: float) -> float:
+	if dv_kms <= 0.0 or ship_thrust_kn <= 0.0:
+		return 0.0
+	var mass_before := dry_mass_kg() + maxf(ship_fuel_kg, 0.0)
+	var used_kg := mass_before * (1.0 - exp(-dv_kms * 1000.0 / ship_ve_ms))
+	var seconds := used_kg * ship_ve_ms / (ship_thrust_kn * 1000.0)
+	return maxf(seconds, 1.0) / 86400.0
+
+
 ## Uses up delta-v from the tanks.
 static func apply_burn(dv_kms: float) -> void:
 	ship_burned = true
@@ -202,11 +217,22 @@ static func advance(delta: float) -> void:
 		var decay_entry := _next_decay_entry(time_jd + step)
 		if decay_entry > 0.0 and (entry < 0.0 or decay_entry < entry):
 			entry = decay_entry
-		if warp_index > AERO_WARP_INDEX and entry > 0.0 and time_jd + step >= entry:
-			# Never jump over the start of an aerobraking pass: stop there and slow down.
-			time_jd = maxf(time_jd, entry)
-			warp_index = AERO_WARP_INDEX
-			step = delta * float(WARP_STEPS[warp_index])
+		if warp_index > AERO_WARP_INDEX:
+			# Stop at the EARLIEST of the events that need a slow warp: the start of an aerobraking pass (never jump
+			# over it), the start of a visible burn / pass morph, and the moment the ship gets inside a smaller view.
+			var stop := -1.0
+			if entry > 0.0 and time_jd + step >= entry:
+				stop = entry
+			var morph_start := _next_morph_start(time_jd + step)
+			if morph_start > 0.0 and (stop < 0.0 or morph_start < stop):
+				stop = morph_start
+			var entry_time := _next_view_entry(time_jd + step)
+			if entry_time > 0.0 and (stop < 0.0 or entry_time < stop):
+				stop = entry_time
+			if stop > 0.0:
+				time_jd = maxf(time_jd, stop)
+				warp_index = AERO_WARP_INDEX
+				step = delta * float(WARP_STEPS[warp_index])
 		time_jd += step
 	_decay_orbit()
 	var running := running_plan()
@@ -240,8 +266,12 @@ static func orbit_status_text() -> String:
 	var frame := str(leg["parent"])
 	var body: Dictionary = bodies[frame]
 	var segment: Dictionary = leg["segment"]
-	var a := float(segment["semi_major_axis_km"])
-	var e := float(segment["eccentricity"])
+	var shown := segment
+	var morph := morph_at(time_jd)
+	if not morph.is_empty() and str(morph["parent"]) == frame:
+		shown = morph["segment"]   # while a burn or a pass changes the orbit, show it changing
+	var a := float(shown["semi_major_axis_km"])
+	var e := float(shown["eccentricity"])
 	var radius := float(body["radius_km"])
 	var periapsis := a * (1.0 - e) - radius
 	var apoapsis := a * (1.0 + e) - radius
@@ -254,7 +284,7 @@ static func orbit_status_text() -> String:
 		speed_name = "Airspeed"
 	var axis_text := "circular"
 	if not OrbitControl.is_circular(periapsis, apoapsis):
-		axis_text = "%.0f deg" % fposmod(float(segment["argument_of_periapsis_deg"]), 360.0)
+		axis_text = "%.0f deg" % fposmod(float(shown["argument_of_periapsis_deg"]), 360.0)
 	return "%s: periapsis %s km | apoapsis %s km | axis %s | altitude %s km | %s %.2f km/s" % [
 			("Orbit around " if leg["kind"] == "orbit" else "Flight around ") + str(body["name"]),
 			_km_text(periapsis), _km_text(apoapsis), axis_text, _km_text(altitude), speed_name, speed]
@@ -705,17 +735,314 @@ static func leg_index_at(jd: float) -> int:
 ## two positions measured from the Sun (about 2e8 km) would lose several km of precision. Instead the
 ## ship's position around its body is added up the chain of parent bodies until it reaches the frame
 ## body; only when the frame is not an ancestor does it fall back to the difference of Sun positions.
+## Near the start and the end of a transfer the position is shifted so that the path joins the orbit it
+## leaves and the orbit it enters without a jump (see transfer_leg_for_plan).
 static func ship_rel(frame_id: String, jd: float) -> Vector2:
-	var leg: Dictionary = legs[leg_index_at(jd)]
+	return leg_rel_with_offsets(legs[leg_index_at(jd)], frame_id, jd)
+
+
+static func _leg_rel(leg: Dictionary, frame_id: String, jd: float) -> Vector2:
 	var total: Vector2 = Kepler.position_at(leg["segment"], jd)
 	var current := str(leg["parent"])
+	# The frame is a body inside the leg's own system (for example a moon of the planet the ship orbits):
+	# subtract the body's position around that planet, which keeps the full precision.
+	var down := Vector2.ZERO
+	var walker := frame_id
+	while walker != current:
+		var up: Variant = bodies[walker]["parent"]
+		if up == null:
+			break
+		down += body_rel(walker, jd)
+		walker = str(up)
+	if walker == current:
+		return total - down
 	while current != frame_id:
 		var parent_id: Variant = bodies[current]["parent"]
 		if parent_id == null:
-			return ship_abs(jd) - body_abs(frame_id, jd)
+			return body_abs(str(leg["parent"]), jd) + Kepler.position_at(leg["segment"], jd) - body_abs(frame_id, jd)
 		total += body_rel(current, jd)
 		current = str(parent_id)
 	return total
+
+
+static func leg_rel_with_offsets(leg: Dictionary, frame_id: String, jd: float) -> Vector2:
+	var base := _leg_rel(leg, frame_id, jd)
+	if leg["kind"] != "transfer":
+		return base
+	var total := base
+	if str(leg.get("from_body", "")) == frame_id:
+		if leg.has("from_hyp"):
+			var from_hyp: Dictionary = leg["from_hyp"]
+			total = _blend_hyperbola(from_hyp, base, (jd - float(from_hyp["t0"])) * 86400.0)
+		else:
+			total += _faded(leg["from_offset"], base - (leg["from_ref"] as Vector2))
+	if str(leg.get("to_body", "")) == frame_id:
+		if leg.has("to_hyp"):
+			var to_hyp: Dictionary = leg["to_hyp"]
+			total = _blend_hyperbola(to_hyp, base, (jd - float(to_hyp["t0"])) * 86400.0)
+		else:
+			total += _faded(leg["to_offset"], base - (leg["to_ref"] as Vector2))
+	return total
+
+
+## A hyperbolic escape or approach around a body: periapsis radius rp at the angle phi (the point where the
+## ship leaves / enters its orbit, so the path joins that orbit tangentially), speed at infinity v_inf (km/s).
+static func _hyperbola(mu: float, rp: float, phi: float, v_inf: float) -> Dictionary:
+	var v2 := v_inf * v_inf
+	var a_abs := mu / v2
+	return {"e": 1.0 + rp * v2 / mu, "a": a_abs, "n": sqrt(mu / pow(a_abs, 3.0)), "rp": rp, "phi": phi}
+
+
+## Position on the hyperbola the given number of seconds after (positive) or before (negative) the periapsis.
+static func _hyperbola_pos(h: Dictionary, seconds: float) -> Vector2:
+	var e := float(h["e"])
+	var a_abs := float(h["a"])
+	var m := float(h["n"]) * seconds
+	var anomaly := asinh(m / e)
+	for _i in 40:
+		anomaly -= (e * sinh(anomaly) - anomaly - m) / (e * cosh(anomaly) - 1.0)
+	return Vector2(a_abs * (e - cosh(anomaly)), a_abs * sqrt(e * e - 1.0) * sinh(anomaly)).rotated(float(h["phi"]))
+
+
+## Direction (angle) the ship travels along the far arm of the hyperbola.
+static func _asymptote_angle(h: Dictionary, incoming: bool) -> float:
+	var slope := sqrt(float(h["e"]) * float(h["e"]) - 1.0)
+	return Vector2(1.0 if incoming else -1.0, slope).angle() + float(h["phi"])
+
+
+## The sideways distance of the far arm of the hyperbola from a line through the body with the same direction
+## (the impact parameter, as a vector): the far path is the transfer's own path moved by this much.
+static func _asymptote_shift(h: Dictionary, incoming: bool) -> Vector2:
+	var e := float(h["e"])
+	var a_abs := float(h["a"])
+	var anomaly := -12.0 if incoming else 12.0
+	var far := Vector2(a_abs * (e - cosh(anomaly)), a_abs * sqrt(e * e - 1.0) * sinh(anomaly)).rotated(float(h["phi"]))
+	var travel := Vector2.from_angle(_asymptote_angle(h, incoming))
+	var outward := -travel if incoming else travel
+	return far - outward * far.dot(outward)
+
+
+## Near the body the path follows the hyperbola; far away the transfer's own path, turned by h["delta"] so
+## that it comes in (goes out) along the same direction as the hyperbola, and moved sideways by h["shift"] so
+## that it also lies on the same line (the path does not aim at the body's centre but passes it at the
+## impact parameter and swings round it).
+static func _blend_hyperbola(h: Dictionary, base: Vector2, seconds: float) -> Vector2:
+	var hyperbola := _hyperbola_pos(h, seconds)
+	var rp := float(h["rp"])
+	var outer := clampf(6.0 * float(h["a"]), 12.0 * rp, 1.0e8)
+	var weight := clampf(1.0 - (hyperbola.length() - 3.0 * rp) / (outer - 3.0 * rp), 0.0, 1.0)
+	weight = weight * weight * (3.0 - 2.0 * weight)
+	var far: Vector2 = base.rotated(float(h["delta"])) + (h.get("shift", Vector2.ZERO) as Vector2)
+	return hyperbola * weight + far * (1.0 - weight)
+
+
+## offset * a factor that is 1 at the point of the jump and falls to 0 once the path has moved a few times
+## the size of the jump away from it.
+static func _faded(offset: Vector2, moved: Vector2) -> Vector2:
+	var length := offset.length()
+	if length < 1.0:
+		return Vector2.ZERO
+	var factor := clampf(1.0 - moved.length() / (ROUTE_FADE_LENGTHS * length), 0.0, 1.0)
+	return offset * factor * factor
+
+
+## The transfer leg of a plan. The model switches from the orbit around the origin to the transfer orbit
+## (and from it to the orbit around the target) at one point, so the path would jump; from_offset / to_offset
+## hold that jump (relative to the origin / target body) and from_ref / to_ref the transfer's own position
+## there, so that leg_rel_with_offsets can blend it out. parked is the leg the ship leaves (empty during a
+## course change in flight).
+static func transfer_leg_for_plan(a_plan: Dictionary, parked: Dictionary) -> Dictionary:
+	var leg := {"parent": a_plan["frame"], "segment": a_plan["transfer_segment"], "t_start": a_plan["t_dep"],
+			"label": ("Orbit change around %s" if a_plan.get("orbit_change", false) else "Transfer orbit to %s") % a_plan["target_name"],
+			"kind": "transfer"}
+	if not parked.is_empty() and str(parked["parent"]) == str(a_plan["origin_id"]) and not a_plan.get("midflight", false):
+		var base := _leg_rel(leg, str(a_plan["origin_id"]), float(a_plan["t_dep"]))
+		leg["from_body"] = str(a_plan["origin_id"])
+		leg["from_ref"] = base
+		leg["from_offset"] = Kepler.position_at(parked["segment"], float(a_plan["t_dep"])) - base
+		var departure_point: Vector2 = Kepler.position_at(parked["segment"], float(a_plan["t_dep"]))
+		var departure_speed := (_leg_rel(leg, str(a_plan["origin_id"]), float(a_plan["t_dep"]) + 3600.0 / 86400.0) - base).length() / 3600.0
+		if str(a_plan["frame"]) != str(a_plan["origin_id"]) and departure_speed > 0.01 and departure_point.length() > 1.0 \
+				and base.length() < 2.0 * departure_point.length():   # the transfer must start at the body itself
+			var hyp := _hyperbola(float(bodies[str(a_plan["origin_id"])]["gm_km3_s2"]), departure_point.length(), departure_point.angle(), departure_speed)
+			var dt := minf(1.0, 0.25 * float(a_plan["flight_days"]))
+			var far_step := _leg_rel(leg, str(a_plan["origin_id"]), float(a_plan["t_dep"]) + dt) - _leg_rel(leg, str(a_plan["origin_id"]), float(a_plan["t_dep"]) + 0.5 * dt)
+			hyp["delta"] = _asymptote_angle(hyp, false) - far_step.angle()
+			hyp["t0"] = float(a_plan["t_dep"])
+			hyp["shift"] = _asymptote_shift(hyp, false)
+			leg["from_hyp"] = hyp
+	var captures: Array = a_plan.get("capture_legs", [])
+	if not captures.is_empty() and str(captures[0]["parent"]) == str(a_plan["target_id"]):
+		var base_end := _leg_rel(leg, str(a_plan["target_id"]), float(a_plan["t_arr"]))
+		leg["to_body"] = str(a_plan["target_id"])
+		leg["to_ref"] = base_end
+		leg["to_offset"] = Kepler.position_at(captures[0]["segment"], float(captures[0]["t_start"])) - base_end
+		var capture_point: Vector2 = Kepler.position_at(captures[0]["segment"], float(captures[0]["t_start"]))
+		var energy := float(a_plan.get("arrival_energy", -1.0))
+		if energy > 0.0 and str(a_plan["frame"]) != str(a_plan["target_id"]) and capture_point.length() > 1.0 \
+				and base_end.length() < 2.0 * capture_point.length():
+			var hyp_in := _hyperbola(float(a_plan["gm_target"]), capture_point.length(), capture_point.angle(), sqrt(2.0 * energy))
+			var dt_in := minf(1.0, 0.25 * float(a_plan["flight_days"]))
+			var near_step := _leg_rel(leg, str(a_plan["target_id"]), float(a_plan["t_arr"]) - 0.5 * dt_in) - _leg_rel(leg, str(a_plan["target_id"]), float(a_plan["t_arr"]) - dt_in)
+			hyp_in["delta"] = _asymptote_angle(hyp_in, true) - near_step.angle()
+			hyp_in["t0"] = float(a_plan["t_arr"])
+			hyp_in["shift"] = _asymptote_shift(hyp_in, true)
+			leg["to_hyp"] = hyp_in
+	return leg
+
+
+## The transfer leg to draw for a plan: the real one once it is launched, otherwise a fresh one.
+static func plan_transfer_leg(a_plan: Dictionary) -> Dictionary:
+	if a_plan.is_empty():
+		return {}
+	if a_plan["committed"]:
+		for leg in legs:
+			if leg["kind"] == "transfer" and absf(float(leg["t_start"]) - float(a_plan["t_dep"])) < 1.0e-9:
+				return leg
+		return {}
+	return transfer_leg_for_plan(a_plan, parked_leg())
+
+
+## Gives the legs of a launched plan the time their changes of orbit take: the burn time of the burn, or the
+## time of one pass through the atmosphere. During that time the displayed orbit morphs from the old orbit
+## to the new one (see morph_at).
+static func set_morph_times(a_plan: Dictionary, transfer_leg: Dictionary) -> void:
+	transfer_leg["morph_days"] = burn_days(float(a_plan["dv_departure"]))
+	var aero: Dictionary = a_plan.get("aero", {})
+	var aero_used: bool = aero.get("enabled", false) and str(aero.get("outcome", "ok")) == "ok"
+	var captures: Array = a_plan.get("capture_legs", [])
+	for i in captures.size():
+		var capture_leg: Dictionary = captures[i]
+		if aero_used and i < int(aero["n"]):
+			capture_leg["morph_days"] = float(aero.get("pass_days", 0.0))
+		elif aero_used:
+			capture_leg["morph_days"] = burn_days(float(aero.get("final_dv", 0.0)))
+		else:
+			capture_leg["morph_days"] = burn_days(float(a_plan["dv_arrival"]))
+
+
+## While a burn or an aerobraking pass changes the orbit, the orbit to show: periapsis, apoapsis and axis move
+## linearly from the old orbit to the new one. Returns {"parent", "segment"} (a copy of the new segment with
+## the shown shape), or {} when no change is going on.
+static func _morph_visible(i: int) -> bool:
+	# Leaving for another body is not morphed: the route is drawn instead.
+	return float(legs[i].get("morph_days", 0.0)) > 0.0 and not (str(legs[i - 1]["parent"]) != str(legs[i]["parent"]) and legs[i]["kind"] == "transfer")
+
+
+## The start of the next morph (before jd_end), or -1.
+static func _next_morph_start(jd_end: float) -> float:
+	var best := -1.0
+	for i in range(1, legs.size()):
+		if not _morph_visible(i):
+			continue
+		var t0 := float(legs[i]["t_start"]) - 0.5 * float(legs[i]["morph_days"])
+		if t0 > time_jd and t0 <= jd_end and (best < 0.0 or t0 < best):
+			best = t0
+	return best
+
+
+static func morph_at(jd: float) -> Dictionary:
+	for i in range(1, legs.size()):
+		var leg: Dictionary = legs[i]
+		var span := float(leg.get("morph_days", 0.0))
+		if span <= 0.0:
+			continue
+		var t0 := float(leg["t_start"]) - 0.5 * span
+		if jd < t0 or jd > t0 + span:
+			continue
+		var before: Dictionary = legs[i - 1]
+		var new_segment: Dictionary = leg["segment"]
+		var old_segment: Dictionary = before["segment"]
+		if str(before["parent"]) != str(leg["parent"]):
+			if leg["kind"] == "transfer":
+				continue   # leaving for another body: the route is drawn instead
+			# Insertion: the orbit shrinks from a very wide one with the same periapsis.
+			var rp_new := float(new_segment["semi_major_axis_km"]) * (1.0 - float(new_segment["eccentricity"]))
+			var wide := view_radius_km(str(leg["parent"]), jd) * 1.5
+			old_segment = AeroBraking._ellipse(1.0, rp_new, maxf(wide, rp_new * 2.0), jd, float(new_segment["argument_of_periapsis_deg"]), 0.0)
+		var w := (jd - t0) / span
+		var rp0 := float(old_segment["semi_major_axis_km"]) * (1.0 - float(old_segment["eccentricity"]))
+		var ra0 := float(old_segment["semi_major_axis_km"]) * (1.0 + float(old_segment["eccentricity"]))
+		var rp1 := float(new_segment["semi_major_axis_km"]) * (1.0 - float(new_segment["eccentricity"]))
+		var ra1 := float(new_segment["semi_major_axis_km"]) * (1.0 + float(new_segment["eccentricity"]))
+		var axis0 := float(old_segment["argument_of_periapsis_deg"])
+		var axis1 := float(new_segment["argument_of_periapsis_deg"])
+		if float(old_segment["eccentricity"]) < 0.002:
+			axis0 = axis1   # a circular orbit has no axis: use the other one
+		elif float(new_segment["eccentricity"]) < 0.002:
+			axis1 = axis0
+		var rp := lerpf(rp0, rp1, w)
+		var ra := lerpf(ra0, ra1, w)
+		var shown: Dictionary = new_segment.duplicate()
+		shown["semi_major_axis_km"] = 0.5 * (rp + ra)
+		shown["eccentricity"] = (ra - rp) / (ra + rp)
+		shown["argument_of_periapsis_deg"] = axis0 + wrapf(axis1 - axis0, -180.0, 180.0) * w
+		return {"parent": str(leg["parent"]), "segment": shown}
+	return {}
+
+
+# ---------------------------------------------------------------- views
+
+## The distance that the view of a body is scaled to: the widest orbit of its children (or of the ship, if the
+## body has no children), at least four body radii.
+static func view_extent_km(frame_id: String, jd: float) -> float:
+	var kid_ids: Array = children[frame_id]
+	var extent := float(bodies[frame_id]["radius_km"]) * 4.0
+	var leg: Dictionary = legs[leg_index_at(jd)]
+	if kid_ids.is_empty() and leg["parent"] == frame_id:
+		extent = maxf(extent, float(leg["segment"]["semi_major_axis_km"]) * 1.5)
+	for kid_id in kid_ids:
+		var segment := Kepler.segment_at(bodies[kid_id]["orbit_segments"], jd)
+		extent = maxf(extent, float(segment["semi_major_axis_km"]) * (1.0 + float(segment["eccentricity"])))
+	return extent
+
+
+## The distance from a body's centre that its view shows at the edge of a portrait screen.
+static func view_radius_km(frame_id: String, jd: float) -> float:
+	return view_extent_km(frame_id, jd) / VIEW_FILL
+
+
+## The body with the smallest view that contains the ship.
+static func smallest_view(jd: float) -> String:
+	var best := "sun"
+	var best_radius := INF
+	for id in bodies.keys():
+		var radius := view_radius_km(str(id), jd)
+		if radius < best_radius and ship_rel(str(id), jd).length() <= radius:
+			best = str(id)
+			best_radius = radius
+	return best
+
+
+## If the ship gets inside a smaller view than the one it is in now before jd_end, when it gets in (else -1).
+## The whole interval is sampled: at a high warp a step can carry the ship through a small view (Mars) and out
+## again, so comparing only the two ends would miss it.
+static func _next_view_entry(jd_end: float) -> float:
+	var now_radius := view_radius_km(smallest_view(time_jd), time_jd)
+	var candidates: Array = []
+	for id in bodies.keys():
+		if view_radius_km(str(id), time_jd) < now_radius:
+			candidates.append(str(id))
+	if candidates.is_empty():
+		return -1.0
+	var span := jd_end - time_jd
+	var samples := clampi(ceili(span / 0.01), 1, 160)
+	var previous := time_jd
+	for k in range(1, samples + 1):
+		var t := time_jd + span * float(k) / float(samples)
+		for id in candidates:
+			if ship_rel(id, t).length() <= view_radius_km(id, t):
+				var low := previous
+				var high := t
+				for _i in 24:
+					var middle := 0.5 * (low + high)
+					if ship_rel(id, middle).length() <= view_radius_km(id, middle):
+						high = middle
+					else:
+						low = middle
+				return high
+		previous = t
+	return -1.0
 
 
 ## Position (km) of the ship relative to the Sun.

@@ -310,7 +310,7 @@ static func setup_plan(plan: Dictionary) -> void:
 		aero["n"] = 1
 		aero["h_km"] = maxf(find_altitude(ctx, 1, SEARCH_DT), float(aero["h_min_km"]))
 		center_band(aero, float(aero["h_km"]))
-		aero["message"] = "The shield cannot take the heat of a safe aerobraking pass; the capture is propulsive."
+		aero["message"] = "The shield cannot take the heat of aerobraking with the safe margin the planner keeps (%.0f%% of the remaining shield in reserve), so the capture is propulsive. You can still switch aerobraking on." % ((1.0 - HEAT_MARGIN) * 100.0)
 		return
 	apply(plan, true, int(suggestion["n"]), float(suggestion["h_km"]), true)
 
@@ -428,6 +428,7 @@ static func apply(plan: Dictionary, enabled: bool, n: int, h_km: float, recenter
 		aero["entry_times"] = [float(plan["t_arr"]) - 300.0 / 86400.0]
 		return
 	aero["message"] = ""
+	aero["pass_days"] = float(result["seconds"]) / float(maxi(n, 1)) / 86400.0   # the time of one pass: the orbit changes during it
 	var ras: Array = result["ras"]
 	var ra := float(result["ra"])
 	var rp := radius + h_km
