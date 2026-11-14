@@ -5,6 +5,7 @@ extends RefCounted
 ## at each sphere of influence). Everything is 2D, so inclinations are ignored.
 
 const SYNODIC_SEARCH_DAYS := 2000.0   # search period for windows between planets
+const MAX_ORBIT_SEARCH_PERIODS := 40.0   # never search longer than this many orbits of the ship
 const ORBIT_SEARCH_PERIODS := 1.5     # for a ship in orbit around the origin: how many orbits to search
 const NEARLY_CIRCULAR := 0.05         # if periapsis and apoapsis differ by less than this share of the apoapsis, the axis is ignored
 const AXIS_TOLERANCE_DEG := 10.0      # a departure from an elliptical orbit may be this far off the periapsis direction
@@ -83,8 +84,15 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 		frame = origin_id
 		var period_days := 360.0 / float(orbit_segment["mean_motion_deg_per_day"])
 		var origin_fn := func(t: float) -> Vector2: return Kepler.position_at(orbit_segment, t)
+		# The ship meets the moon's position again only after a synodic period, which can be several ship
+		# orbits when the ship's orbit period is close to the moon's: search at least a bit more than that.
+		var horizon := period_days * ORBIT_SEARCH_PERIODS
+		var target_period := _period_days(target_id)
+		var rate_difference := absf(1.0 / period_days - 1.0 / target_period)
+		var synodic_days := MAX_ORBIT_SEARCH_PERIODS * period_days if rate_difference < 1.0e-9 else 1.0 / rate_difference
+		horizon = minf(maxf(horizon, 1.2 * synodic_days), MAX_ORBIT_SEARCH_PERIODS * period_days)
 		transfer = TransferPlanner.find_window(origin_gm, origin_fn, target_fn, t_start,
-				period_days * ORBIT_SEARCH_PERIODS, period_days / 180.0)
+				horizon, period_days / 180.0)
 		if transfer.is_empty():
 			return {"error": "No launch window found."}
 		dv_departure = TransferPlanner.departure_dv_bound(transfer, origin_gm)

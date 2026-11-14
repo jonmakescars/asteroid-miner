@@ -103,3 +103,39 @@ Kilometres, days (Julian Date), degrees, GM in km³/s², mass in kg. The game st
 - Fix (9i): course-change plans now get their capture legs/aerobraking data (`AeroBraking.setup_plan`); before, the ship never switched to the orbit around the destination.
 - The destination list always includes the body the ship is at (parked) or flying around (in flight), shown as "Orbit around X". Parked: `MissionPlanner._plan_orbit_change` (two apsis burns, defaults to the current orbit). In flight around a planet/moon: `CourseChange._central_plan` finds the cheapest burn onto a path with the chosen periapsis (any periapsis direction), then the usual capture/aerobraking applies. Not offered in the Sun's frame.
 - Top bar (9m): shows the ship name next to the date, and a line about the current orbit (`GameState.orbit_status_text`): periapsis/apoapsis altitude, axis angle (or "circular"), current altitude, speed relative to the body ("Airspeed" while below the atmosphere's upper limit; on-rails legs do not model the speed lost in a pass).
+- Landscape/phone (9p): the top bar's content sits in a ScrollContainer whose height is limited to 70% (portrait) or 55% (landscape) of the screen; the rest scrolls (drag or scroll bar). Set the orientation in Project Settings > Display > Window > Handheld.
+
+## Orbit decay and the launch popup (9q)
+- A parked orbit whose periapsis is inside the atmosphere now decays. On first use `GameState._ensure_decay(leg)` simulates
+  the passes with `AeroBraking.simulate_pass` (periapsis fixed, energy lost per pass; once there are many passes, one
+  simulated pass stands for a group of them, at most 60 groups). Each group sets the leg's orbit lower at its last pass.
+- Time warp drops to 1 min/s at the start of every pass (`_next_decay_entry`). Heat goes to the shield and g-load damages
+  the ship via `_take_aerobraking_effects`. When the apoapsis falls to the top of the atmosphere (or a pass crashes) the
+  ship is lost (placeholder: health 0 + message). Changing the orbit before that replaces the leg, so the decay stops.
+- The launch warning popup wraps its text and is sized from the window width (autowrap, `wrap_controls`).
+
+## Ship lost animation (9r)
+- `art/burnup/lander_000..119.png`: 10 s, 12 fps, 480x300, transparent. Rendered from the "Burning up / Lander burning up"
+  SVG of the "Ship sprite samples" canvas (Heating board) with Playwright (SMIL time stepped per frame). The lifting-body
+  version can be rendered the same way when that hull exists.
+- `GameState.lost_event` {text, burn} is set by `_lose_ship` (doomed arrival, or decay) and pauses time. `burn` is true when
+  the loss happened at a body with an atmosphere. The orbit view shows `ShipLostOverlay` (new class_name: run
+  `godot --headless --import` once): animation, tap to skip, then an AcceptDialog "Ship lost". Crashes on bodies without an
+  atmosphere (Moon) show only the popup.
+
+## Cargo mass in the delta-v (9s)
+- `GameState.dry_mass_kg()` = empty ship + cargo kits. `fuel_for_dv`, `dv_for_fuel`, the aerobraking ballistic coefficient and
+  `ship_mass_after_departure` use it, so loading a kit lowers the delta-v for the same propellant and deploying it raises it again.
+  Propellant mass is unchanged by loading/deploying. (The shield mass is still part of the empty ship.)
+
+## Delta-v with and without payload (9t)
+- Ship design screen shows "Delta-v without payload" (only the shield on top of the stages) and "Delta-v with full payload".
+  The saved design adds `dry_empty_kg` and `empty_dv_ms`. Before this the saved `dry_eff_kg` included the full payload mass,
+  which made 9s count the payload twice. `GameState.ship_dry_kg` is now the EMPTY ship (older saves: dry_eff minus payload);
+  `dry_mass_kg()` adds the kits actually carried. The tank capacity in the orbit screen is the delta-v of a full tank with the
+  current cargo. Re-open the ship design screen once so it re-saves the design.
+
+## Launch window search from a high orbit (9u)
+- Ship in orbit around a planet, target one of its moons: the window search now covers at least 1.2 synodic periods of ship
+  and moon (up to 40 ship orbits) instead of 1.5 ship orbits. Example: ship at 4000 km around Mars to Phobos (synodic
+  period about 3 ship orbits) found no window when the ship was on the wrong side.

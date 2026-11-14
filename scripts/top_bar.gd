@@ -15,6 +15,10 @@ const SCREENS := [
 	["Menu", "res://menu.tscn"],
 ]
 
+const MAX_HEIGHT_PORTRAIT := 0.7    # share of the screen height the bar may use before it scrolls
+const MAX_HEIGHT_LANDSCAPE := 0.55
+
+var scroll: ScrollContainer
 var box: VBoxContainer
 var pause_button: Button
 var view_button: Button
@@ -28,8 +32,15 @@ var orbit_label: Label
 ## current_scene is the path of the screen the bar sits on (its own button is left out).
 func setup(current_scene: String, view_text: String) -> void:
 	set_anchors_preset(Control.PRESET_TOP_WIDE)
+	# Everything sits in a scroll area that is limited in height, so that on a low (landscape) screen the
+	# bar does not cover the whole map: drag the content or use the scroll bar.
+	scroll = ScrollContainer.new()
+	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
+	add_child(scroll)
+	scroll.get_v_scroll_bar().custom_minimum_size.x = 16
 	box = VBoxContainer.new()
-	add_child(box)
+	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	scroll.add_child(box)
 
 	var row := HFlowContainer.new()
 	box.add_child(row)
@@ -76,6 +87,11 @@ func set_view_text(text: String) -> void:
 
 
 func refresh() -> void:
+	var screen := get_viewport_rect().size
+	var limit := screen.y * (MAX_HEIGHT_LANDSCAPE if screen.x > screen.y else MAX_HEIGHT_PORTRAIT)
+	var wanted := minf(box.get_combined_minimum_size().y, limit)
+	if absf(scroll.custom_minimum_size.y - wanted) > 1.0:
+		scroll.custom_minimum_size.y = wanted
 	pause_button.text = "Resume" if GameState.paused else "Pause"
 	date_label.text = GameState.date_text(GameState.time_jd)
 	ship_label.text = "   Ship: %s" % GameState.ship_name

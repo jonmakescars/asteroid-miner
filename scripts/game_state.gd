@@ -44,6 +44,7 @@ static var saved_plan: Dictionary = {}
 ## The target orbit the player chose for each destination body: {rp_alt_km, ra_alt_km, offset_deg}.
 static var target_orbits: Dictionary = {}
 static var message := ""
+static var lost_event: Dictionary = {}   # {text, burn}: set when the ship is lost; the screen shows it and clears it
 static var ship_name := "Ship"
 static var cargo: Array = []   # facility type ids of the kits the ship carries
 
@@ -54,7 +55,7 @@ static var ship_dv_kms := DEFAULT_SHIP_DV_KMS           # capacity
 static var ship_payload_kg := DEFAULT_SHIP_PAYLOAD_KG   # cargo capacity
 static var ship_fuel_capacity_kg := DEFAULT_SHIP_PROPELLANT_KG
 static var ship_ve_ms := DEFAULT_SHIP_VE_MS
-static var ship_dry_kg := DEFAULT_SHIP_PROPELLANT_KG / (exp(DEFAULT_SHIP_DV_KMS * 1000.0 / DEFAULT_SHIP_VE_MS) - 1.0)
+static var ship_dry_kg := DEFAULT_SHIP_PROPELLANT_KG / (exp(DEFAULT_SHIP_DV_KMS * 1000.0 / DEFAULT_SHIP_VE_MS) - 1.0) - DEFAULT_SHIP_PAYLOAD_KG
 # The heat shield: thickness, area, and the heat load (MJ/m2) it has already absorbed. Health drops when a
 # pass overloads the shield or the g limit.
 static var ship_shield_cm := DEFAULT_SHIELD_CM
@@ -130,6 +131,7 @@ static func reset_mission() -> void:
 	ship_fuel_kg = ship_fuel_capacity_kg
 	shield_used_mj_m2 = 0.0
 	ship_health = 1.0
+	lost_event = {}
 	budget_eur = start_budget_eur
 	facilities = {}
 	for entry in start_facilities:
@@ -148,7 +150,8 @@ static func load_ship_design() -> void:
 			if parsed.has("propellant_kg") and parsed.has("ve_eff_ms"):
 				ship_fuel_capacity_kg = float(parsed["propellant_kg"])
 				ship_ve_ms = float(parsed["ve_eff_ms"])
-				ship_dry_kg = float(parsed["dry_eff_kg"])
+				# The empty ship; older saved designs only have the mass with the full payload.
+				ship_dry_kg = float(parsed.get("dry_empty_kg", maxf(float(parsed["dry_eff_kg"]) - ship_payload_kg, 100.0)))
 			ship_shield_cm = float(parsed.get("shield_cm", ship_shield_cm))
 			ship_shield_area_m2 = float(parsed.get("shield_area_m2", ship_shield_area_m2))
 	# Until the ship has used any fuel the tanks are full; afterwards a new design can only lower the level.
@@ -162,14 +165,20 @@ static func load_ship_design() -> void:
 		budget_eur += float(facility_types[type_id]["kit"]["cost_eur"])
 
 
+## The mass of the ship without propellant: the empty ship plus the cargo it carries. This is the mass the
+## rocket equation works with, so loading a kit lowers the delta-v and deploying it raises it again.
+static func dry_mass_kg() -> float:
+	return ship_dry_kg + cargo_mass_kg()
+
+
 ## Propellant mass (kg) that corresponds to a delta-v (km/s) for the equivalent single stage.
 static func fuel_for_dv(dv_kms: float) -> float:
-	return ship_dry_kg * (exp(dv_kms * 1000.0 / ship_ve_ms) - 1.0)
+	return dry_mass_kg() * (exp(dv_kms * 1000.0 / ship_ve_ms) - 1.0)
 
 
 ## Delta-v (km/s) that a propellant mass (kg) gives.
 static func dv_for_fuel(fuel_kg: float) -> float:
-	return ship_ve_ms * log(1.0 + fuel_kg / ship_dry_kg) / 1000.0
+	return ship_ve_ms * log(1.0 + fuel_kg / dry_mass_kg()) / 1000.0
 
 
 static func dv_left_kms() -> float:
@@ -190,12 +199,16 @@ static func advance(delta: float) -> void:
 	if not paused:
 		var step := delta * float(WARP_STEPS[warp_index])
 		var entry := _next_atmosphere_entry()
+		var decay_entry := _next_decay_entry(time_jd + step)
+		if decay_entry > 0.0 and (entry < 0.0 or decay_entry < entry):
+			entry = decay_entry
 		if warp_index > AERO_WARP_INDEX and entry > 0.0 and time_jd + step >= entry:
 			# Never jump over the start of an aerobraking pass: stop there and slow down.
 			time_jd = maxf(time_jd, entry)
 			warp_index = AERO_WARP_INDEX
 			step = delta * float(WARP_STEPS[warp_index])
 		time_jd += step
+	_decay_orbit()
 	var running := running_plan()
 	if not running.is_empty() and running["committed"]:
 		if not running["departure_done"] and time_jd >= float(running["t_dep"]):
@@ -207,6 +220,7 @@ static func advance(delta: float) -> void:
 				# The planner only warned about this; now it happens. (Placeholder rules: the ship is wrecked.)
 				ship_health = 0.0
 				message = "Ship lost near %s: %s" % [running["target_name"], running["outcome_text"]]
+				_lose_ship(message, bodies[str(running["target_id"])].get("atmosphere") is Dictionary)
 			else:
 				apply_burn(float(running["dv_arrival"]))
 				message = "Arrived at %s." % running["target_name"]
@@ -272,6 +286,122 @@ static func _next_atmosphere_entry() -> float:
 		if float(entry) > time_jd:
 			return float(entry)
 	return -1.0
+
+
+# ---------------------------------------------------------------- orbit decay
+
+## Records that the ship was lost: time stops and the screen shows the loss (with the burning-up animation
+## when it happened in an atmosphere).
+static func _lose_ship(text: String, burn: bool) -> void:
+	lost_event = {"text": text, "burn": burn}
+	paused = true
+
+const DECAY_MAX_STEPS := 60       # the decay is simulated in at most this many groups of passes
+const DECAY_MAX_PASSES := 20000   # a decay slower than this is ignored
+
+
+## Prepares leg["decay"] for a parked orbit whose periapsis is inside the atmosphere: the passes through the
+## atmosphere, in groups (one simulated pass stands for several similar ones when there are many).
+## leg["decay"] = {"steps": [{"t_entry", "t", "ra" (km, radius), "heat", "g", "lost"}], "next": index}
+static func _ensure_decay(leg: Dictionary) -> void:
+	if leg.has("decay") or leg["kind"] != "orbit":
+		return
+	leg["decay"] = {"steps": [], "next": 0}
+	var body: Dictionary = bodies[str(leg["parent"])]
+	if not (body.get("atmosphere") is Dictionary):
+		return
+	var atmosphere: Dictionary = body["atmosphere"]
+	var segment: Dictionary = leg["segment"]
+	var a := float(segment["semi_major_axis_km"])
+	var e := float(segment["eccentricity"])
+	var radius := float(body["radius_km"])
+	var rp := a * (1.0 - e)
+	var interface_r := radius + AeroBraking.interface_altitude_km(atmosphere)
+	if rp >= interface_r:
+		return
+	var gm := float(body["gm_km3_s2"])
+	var area := ship_shield_area_m2
+	var beta := (dry_mass_kg() + ship_fuel_kg) / (AeroBraking.DRAG_COEFFICIENT * area)
+	var nose := sqrt(area / PI)
+	# First periapsis passage that is still to come.
+	var t_start := maxf(time_jd, float(leg["t_start"]))
+	var n_rate := float(segment["mean_motion_deg_per_day"])
+	var m_deg := float(segment["mean_anomaly_deg"]) + n_rate * (t_start - float(segment["epoch_jd"]))
+	var t_pass := t_start + fposmod(-m_deg, 360.0) / n_rate
+	var energy := -gm / (2.0 * a)
+	var passes := 0
+	var steps: Array = []
+	while passes < DECAY_MAX_PASSES and steps.size() < DECAY_MAX_STEPS:
+		var h_km := rp - radius
+		var result := AeroBraking.simulate_pass(gm, radius, atmosphere, h_km, energy, beta, nose, 4.0)
+		var group := maxi(1, int(passes / 20))
+		if result.has("crash"):
+			steps.append({"t_entry": t_pass - 0.002, "t": t_pass, "ra": 0.0, "heat": 0.0, "g": 0.0, "lost": true})
+			break
+		var new_energy := float(result["energy"])
+		var delta := new_energy - energy
+		energy += delta * float(group)
+		var half_days := 0.5 * float(result["seconds"]) / 86400.0
+		var ra := AeroBraking.apoapsis_from_energy(gm, rp, energy)
+		var lost := ra <= interface_r
+		var period := 0.0 if ra <= 0.0 else TAU * sqrt(pow(0.5 * (rp + ra), 3.0) / gm) / 86400.0
+		var t_group := t_pass + period * float(group - 1)
+		steps.append({"t_entry": t_pass - half_days, "t": t_group, "ra": ra,
+				"heat": float(result["heat_mj_m2"]) * float(group), "g": float(result["peak_g"]), "lost": lost})
+		passes += group
+		if lost:
+			break
+		t_pass = t_group + period
+	if not steps.is_empty() and not steps[steps.size() - 1]["lost"] and passes >= DECAY_MAX_PASSES:
+		steps.clear()   # decays too slowly to matter
+	leg["decay"]["steps"] = steps
+
+
+## The start of the next pass through the atmosphere of a decaying parked orbit before time jd, or -1.
+static func _next_decay_entry(until_jd: float) -> float:
+	var leg: Dictionary = legs[leg_index_at(until_jd)]
+	if leg["kind"] != "orbit":
+		return -1.0
+	_ensure_decay(leg)
+	var decay: Dictionary = leg["decay"]
+	var steps: Array = decay["steps"]
+	for i in range(int(decay["next"]), steps.size()):
+		var entry := float(steps[i]["t_entry"])
+		if entry > time_jd:
+			return entry
+	return -1.0
+
+
+## Carries out the passes of the decay that are over: the orbit gets lower, the shield takes the heat, and
+## at the end the ship is lost.
+static func _decay_orbit() -> void:
+	var leg: Dictionary = legs[leg_index_at(time_jd)]
+	if leg["kind"] != "orbit":
+		return
+	_ensure_decay(leg)
+	var decay: Dictionary = leg["decay"]
+	var steps: Array = decay["steps"]
+	var segment: Dictionary = leg["segment"]
+	var gm := float(bodies[str(leg["parent"])]["gm_km3_s2"])
+	while int(decay["next"]) < steps.size() and float(steps[int(decay["next"])]["t"]) <= time_jd:
+		var step: Dictionary = steps[int(decay["next"])]
+		decay["next"] = int(decay["next"]) + 1
+		var rp := float(segment["semi_major_axis_km"]) * (1.0 - float(segment["eccentricity"]))
+		var text := _take_aerobraking_effects({"heat": float(step["heat"]), "peak_g": float(step["g"])})
+		if bool(step["lost"]):
+			ship_health = 0.0
+			message = "Ship lost: the orbit decayed into the atmosphere of %s." % str(bodies[str(leg["parent"])]["name"])
+			_lose_ship(message, true)
+			warp_index = 0
+			return
+		var ra := float(step["ra"])
+		var a_new := 0.5 * (rp + ra)
+		segment["epoch_jd"] = float(step["t"])
+		segment["mean_anomaly_deg"] = 0.0
+		segment["semi_major_axis_km"] = a_new
+		segment["eccentricity"] = (ra - rp) / (ra + rp)
+		segment["mean_motion_deg_per_day"] = TransferPlanner.mean_motion_deg_per_day(gm, a_new)
+		message = "The orbit is decaying: " + text
 
 
 ## Adds the heat of the aerobraking passes to the shield and damages the ship if the shield or the g
@@ -425,7 +555,7 @@ static func shield_mass_kg() -> float:
 
 ## Ship mass (kg) after the departure burn, for the aerobraking pass at arrival.
 static func ship_mass_after_departure(dv_departure_kms: float) -> float:
-	return ship_dry_kg + fuel_for_dv(maxf(dv_left_kms() - dv_departure_kms, 0.0))
+	return dry_mass_kg() + fuel_for_dv(maxf(dv_left_kms() - dv_departure_kms, 0.0))
 
 
 ## Why the shield cannot be replaced now ("" if it can).

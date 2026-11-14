@@ -55,6 +55,7 @@ var abort_button: Button
 var keep_button: Button
 var warning_label: Label
 var launch_dialog: ConfirmationDialog
+var lost_overlay: ShipLostOverlay
 var skip_button: Button
 var refuel_button: Button
 var deploy_button: Button
@@ -121,6 +122,8 @@ func _build_ui() -> void:
 	launch_dialog.title = "Warning"
 	launch_dialog.ok_button_text = "Launch anyway"
 	launch_dialog.cancel_button_text = "Back to planning"
+	launch_dialog.dialog_autowrap = true
+	launch_dialog.wrap_controls = true
 	add_child(launch_dialog)
 	aero_row = bar.add_row()
 	aero_check = CheckButton.new()
@@ -388,7 +391,12 @@ func _confirm_then(action: Callable) -> void:
 		launch_dialog.confirmed.disconnect(connection["callable"])
 	launch_dialog.dialog_text = "%s\n\nLaunch anyway?" % str(plan["outcome_text"])
 	launch_dialog.confirmed.connect(action)
-	launch_dialog.popup_centered(Vector2i(520, 220))
+	# Size the popup to the window: wrapped text, never wider than the screen.
+	var window_size := get_viewport().get_visible_rect().size
+	var width := int(minf(520.0, window_size.x - 40.0))
+	launch_dialog.min_size = Vector2i(width, 0)
+	launch_dialog.size = Vector2i(width, 0)
+	launch_dialog.popup_centered(Vector2i(width, 0))
 
 
 ## Stops a launch before the departure burn. The plan stays as it is, the launch cost is refunded, and the
@@ -578,6 +586,12 @@ func _frame_id() -> String:
 
 func _process(delta: float) -> void:
 	GameState.advance(delta)
+	if not GameState.lost_event.is_empty() and not is_instance_valid(lost_overlay):
+		var event: Dictionary = GameState.lost_event
+		GameState.lost_event = {}
+		lost_overlay = ShipLostOverlay.new()
+		add_child(lost_overlay)
+		lost_overlay.play(str(event["text"]), bool(event["burn"]))
 	if picker_origin != _picker_key():
 		_fill_destinations(_selected_target_id())
 	_update_ui()
@@ -641,7 +655,8 @@ func _span_text(days: float) -> String:
 func _fuel_text() -> String:
 	return "%s kg (%.2f km/s) of %s kg (%.2f km/s)" % [
 			GameState.thousands(GameState.ship_fuel_kg), GameState.dv_left_kms(),
-			GameState.thousands(GameState.ship_fuel_capacity_kg), GameState.ship_dv_kms]
+			GameState.thousands(GameState.ship_fuel_capacity_kg),
+			GameState.dv_for_fuel(GameState.ship_fuel_capacity_kg)]
 
 
 func _aero_lines() -> PackedStringArray:

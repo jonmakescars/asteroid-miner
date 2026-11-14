@@ -1,0 +1,2198 @@
+{
+ "asteroids/carbonaceous_boulder": {
+  "files": [
+   "carbonaceous_boulder.png",
+   "carbonaceous_boulder_n.png"
+  ],
+  "size": [
+   57,
+   60
+  ],
+  "pivot": [
+   27.0,
+   30.0
+  ],
+  "px_per_unit": 3
+ },
+ "asteroids/carbonaceous_large": {
+  "files": [
+   "carbonaceous_large.png",
+   "carbonaceous_large_n.png"
+  ],
+  "size": [
+   408,
+   402
+  ],
+  "pivot": [
+   201.0,
+   201.0
+  ],
+  "px_per_unit": 3
+ },
+ "asteroids/carbonaceous_medium": {
+  "files": [
+   "carbonaceous_medium.png",
+   "carbonaceous_medium_n.png"
+  ],
+  "size": [
+   261,
+   186
+  ],
+  "pivot": [
+   129.0,
+   93.0
+  ],
+  "px_per_unit": 3
+ },
+ "asteroids/carbonaceous_small": {
+  "files": [
+   "carbonaceous_small.png",
+   "carbonaceous_small_n.png"
+  ],
+  "size": [
+   129,
+   114
+  ],
+  "pivot": [
+   63.0,
+   57.0
+  ],
+  "px_per_unit": 3
+ },
+ "asteroids/icy_boulder": {
+  "files": [
+   "icy_boulder.png",
+   "icy_boulder_n.png"
+  ],
+  "size": [
+   57,
+   60
+  ],
+  "pivot": [
+   27.0,
+   30.0
+  ],
+  "px_per_unit": 3
+ },
+ "asteroids/icy_large": {
+  "files": [
+   "icy_large.png",
+   "icy_large_n.png"
+  ],
+  "size": [
+   432,
+   306
+  ],
+  "pivot": [
+   213.0,
+   153.0
+  ],
+  "px_per_unit": 3
+ },
+ "asteroids/icy_medium": {
+  "files": [
+   "icy_medium.png",
+   "icy_medium_n.png"
+  ],
+  "size": [
+   255,
+   213
+  ],
+  "pivot": [
+   126.0,
+   108.0
+  ],
+  "px_per_unit": 3
+ },
+ "asteroids/icy_small": {
+  "files": [
+   "icy_small.png",
+   "icy_small_n.png"
+  ],
+  "size": [
+   126,
+   120
+  ],
+  "pivot": [
+   63.0,
+   60.0
+  ],
+  "px_per_unit": 3
+ },
+ "asteroids/metallic_boulder": {
+  "files": [
+   "metallic_boulder.png",
+   "metallic_boulder_n.png"
+  ],
+  "size": [
+   57,
+   60
+  ],
+  "pivot": [
+   27.0,
+   30.0
+  ],
+  "px_per_unit": 3
+ },
+ "asteroids/metallic_large": {
+  "files": [
+   "metallic_large.png",
+   "metallic_large_n.png"
+  ],
+  "size": [
+   420,
+   384
+  ],
+  "pivot": [
+   207.0,
+   189.0
+  ],
+  "px_per_unit": 3
+ },
+ "asteroids/metallic_medium": {
+  "files": [
+   "metallic_medium.png",
+   "metallic_medium_n.png"
+  ],
+  "size": [
+   255,
+   231
+  ],
+  "pivot": [
+   126.0,
+   114.0
+  ],
+  "px_per_unit": 3
+ },
+ "asteroids/metallic_small": {
+  "files": [
+   "metallic_small.png",
+   "metallic_small_n.png"
+  ],
+  "size": [
+   132,
+   96
+  ],
+  "pivot": [
+   66.0,
+   48.0
+  ],
+  "px_per_unit": 3
+ },
+ "asteroids/stony_boulder": {
+  "files": [
+   "stony_boulder.png",
+   "stony_boulder_n.png"
+  ],
+  "size": [
+   57,
+   60
+  ],
+  "pivot": [
+   27.0,
+   30.0
+  ],
+  "px_per_unit": 3
+ },
+ "asteroids/stony_large": {
+  "files": [
+   "stony_large.png",
+   "stony_large_n.png"
+  ],
+  "size": [
+   420,
+   348
+  ],
+  "pivot": [
+   207.0,
+   177.0
+  ],
+  "px_per_unit": 3
+ },
+ "asteroids/stony_medium": {
+  "files": [
+   "stony_medium.png",
+   "stony_medium_n.png"
+  ],
+  "size": [
+   249,
+   246
+  ],
+  "pivot": [
+   123.0,
+   123.0
+  ],
+  "px_per_unit": 3
+ },
+ "asteroids/stony_small": {
+  "files": [
+   "stony_small.png",
+   "stony_small_n.png"
+  ],
+  "size": [
+   126,
+   126
+  ],
+  "pivot": [
+   63.0,
+   63.0
+  ],
+  "px_per_unit": 3
+ },
+ "bodies/ceres": {
+  "files": [
+   "ceres.png",
+   "ceres_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Grey and cratered, with the bright spots in one crater",
+  "disc_radius_px": 192
+ },
+ "bodies/deimos": {
+  "files": [
+   "deimos.png",
+   "deimos_n.png"
+  ],
+  "size": [
+   294,
+   231
+  ],
+  "pivot": [
+   143.0,
+   115.0
+  ],
+  "px_per_unit": 2,
+  "note": "Irregular and smoother than Phobos, with a few shallow craters"
+ },
+ "bodies/earth": {
+  "files": [
+   "earth.png",
+   "earth_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Summer state: a small Arctic ice cap and Greenland in white, fading softly into the land. The north pole is shifted toward the top of the image by the axial tilt. Keep the sprite pointing the same way in space as the planet orbits; do not turn it with the orbit",
+  "disc_radius_px": 192
+ },
+ "bodies/earth_snow": {
+  "files": [
+   "earth_snow.png",
+   "earth_snow_n.png"
+  ],
+  "size": [
+   400,
+   400
+  ],
+  "pivot": [
+   200.0,
+   200.0
+  ],
+  "px_per_unit": 2,
+  "note": "Winter overlay for earth: snow on the northern continents and a larger ice cap. Draw it over earth at the same position, scale and rotation, with the same lighting, and fade its opacity from 0 in northern summer to 1 in northern winter",
+  "disc_radius_px": 192
+ },
+ "bodies/jupiter": {
+  "files": [
+   "jupiter.png",
+   "jupiter_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Seen from above the north pole, so the cloud belts are rings around a blue-grey polar region. The Great Red Spot is in the southern half and is not visible from here",
+  "disc_radius_px": 192
+ },
+ "bodies/mars": {
+  "files": [
+   "mars.png",
+   "mars_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "North polar ice cap in white with a darker collar around it. The north pole is shifted toward the top of the image by the axial tilt. Keep the sprite pointing the same way in space as the planet orbits; do not turn it with the orbit",
+  "disc_radius_px": 192
+ },
+ "bodies/mercury": {
+  "files": [
+   "mercury.png",
+   "mercury_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Grey-brown and cratered, with one large pale basin and one rayed crater",
+  "disc_radius_px": 192
+ },
+ "bodies/moon": {
+  "files": [
+   "moon.png",
+   "moon_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Grey with dark maria, craters and one rayed crater",
+  "disc_radius_px": 192
+ },
+ "bodies/moons/ariel": {
+  "files": [
+   "ariel.png",
+   "ariel_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Pale grey with a network of wide canyons",
+  "disc_radius_px": 192
+ },
+ "bodies/moons/callisto": {
+  "files": [
+   "callisto.png",
+   "callisto_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Dark and saturated with small bright craters, with one large ringed basin",
+  "disc_radius_px": 192
+ },
+ "bodies/moons/dione": {
+  "files": [
+   "dione.png",
+   "dione_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Grey ice with bright wispy streaks across one side",
+  "disc_radius_px": 192
+ },
+ "bodies/moons/enceladus": {
+  "files": [
+   "enceladus.png",
+   "enceladus_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Bright white ice with a few craters and blue fractures",
+  "disc_radius_px": 192
+ },
+ "bodies/moons/europa": {
+  "files": [
+   "europa.png",
+   "europa_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Off-white ice crossed by reddish-brown cracks",
+  "disc_radius_px": 192
+ },
+ "bodies/moons/ganymede": {
+  "files": [
+   "ganymede.png",
+   "ganymede_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Grey-brown with dark old regions, paler grooved bands and a bright rayed crater",
+  "disc_radius_px": 192
+ },
+ "bodies/moons/iapetus": {
+  "files": [
+   "iapetus.png",
+   "iapetus_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Two-toned: one half dark brown, the other bright, with a ridge line along the equator",
+  "disc_radius_px": 192
+ },
+ "bodies/moons/io": {
+  "files": [
+   "io.png",
+   "io_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Sulphur yellow with orange and white patches, dark volcanic vents and one red ring",
+  "disc_radius_px": 192
+ },
+ "bodies/moons/mimas": {
+  "files": [
+   "mimas.png",
+   "mimas_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Grey and cratered with one very large crater that has a central peak",
+  "disc_radius_px": 192
+ },
+ "bodies/moons/miranda": {
+  "files": [
+   "miranda.png",
+   "miranda_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Grey patchwork of ridged regions with a bright chevron",
+  "disc_radius_px": 192
+ },
+ "bodies/moons/oberon": {
+  "files": [
+   "oberon.png",
+   "oberon_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Grey with a reddish tint and several craters with dark floors",
+  "disc_radius_px": 192
+ },
+ "bodies/moons/rhea": {
+  "files": [
+   "rhea.png",
+   "rhea_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Grey and heavily cratered, with one small bright rayed crater",
+  "disc_radius_px": 192
+ },
+ "bodies/moons/tethys": {
+  "files": [
+   "tethys.png",
+   "tethys_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Pale grey ice with one broad shallow crater and a long canyon",
+  "disc_radius_px": 192
+ },
+ "bodies/moons/titan": {
+  "files": [
+   "titan.png",
+   "titan_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Hazy orange with soft rings of haze and a darker hood over the pole",
+  "disc_radius_px": 192
+ },
+ "bodies/moons/titania": {
+  "files": [
+   "titania.png",
+   "titania_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Grey-beige with two long canyons and scattered craters",
+  "disc_radius_px": 192
+ },
+ "bodies/moons/triton": {
+  "files": [
+   "triton.png",
+   "triton_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Half pinkish ice cap with dark wind streaks, half blue-green dimpled terrain",
+  "disc_radius_px": 192
+ },
+ "bodies/moons/umbriel": {
+  "files": [
+   "umbriel.png",
+   "umbriel_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Dark grey and cratered, with one bright ring near the edge",
+  "disc_radius_px": 192
+ },
+ "bodies/neptune": {
+  "files": [
+   "neptune.png",
+   "neptune_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Deep blue with faint belts, white cloud streaks and one dark spot. The north pole is shifted toward the top of the image by the axial tilt. Keep the sprite pointing the same way in space as the planet orbits; do not turn it with the orbit",
+  "disc_radius_px": 192
+ },
+ "bodies/phobos": {
+  "files": [
+   "phobos.png",
+   "phobos_n.png"
+  ],
+  "size": [
+   329,
+   248
+  ],
+  "pivot": [
+   160.0,
+   124.0
+  ],
+  "px_per_unit": 2,
+  "note": "Irregular, with the large Stickney crater at one end and grooves running from it"
+ },
+ "bodies/saturn": {
+  "files": [
+   "saturn.png",
+   "saturn_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Pale gold belts and the dark hexagon at the north pole. The rings are a separate sprite, saturn_rings. The north pole is shifted toward the top of the image by the axial tilt. Keep the sprite pointing the same way in space as the planet orbits; do not turn it with the orbit",
+  "disc_radius_px": 192
+ },
+ "bodies/saturn_rings": {
+  "files": [
+   "saturn_rings.png"
+  ],
+  "size": [
+   878,
+   786
+  ],
+  "pivot": [
+   439.0,
+   393.0
+  ],
+  "px_per_unit": 2,
+  "note": "Draw at the same position and scale as saturn, unlit. The rings clear the disc, so draw order does not matter. Ring tilt is toward the top of the image, like the planet"
+ },
+ "bodies/sun": {
+  "files": [
+   "sun.png"
+  ],
+  "size": [
+   594,
+   594
+  ],
+  "pivot": [
+   297.0,
+   297.0
+  ],
+  "px_per_unit": 2,
+  "note": "Draw unlit. The disc is 96 units in radius (192 px); the rest of the image is the corona glow",
+  "disc_radius_px": 192
+ },
+ "bodies/uranus": {
+  "files": [
+   "uranus.png",
+   "uranus_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Pale cyan. The planet lies on its side, so the pole is at the top edge with a paler cap around it. The rings are a separate sprite, uranus_rings",
+  "disc_radius_px": 192
+ },
+ "bodies/uranus_rings": {
+  "files": [
+   "uranus_rings.png"
+  ],
+  "size": [
+   792,
+   108
+  ],
+  "pivot": [
+   396.0,
+   51.0
+  ],
+  "px_per_unit": 2,
+  "note": "Draw over uranus at the same position and scale, unlit. The part of the rings behind the planet is already cut away"
+ },
+ "bodies/venus": {
+  "files": [
+   "venus.png",
+   "venus_n.png"
+  ],
+  "size": [
+   390,
+   390
+  ],
+  "pivot": [
+   195.0,
+   195.0
+  ],
+  "px_per_unit": 2,
+  "note": "Cream cloud deck with a sideways V of darker and paler streaks",
+  "disc_radius_px": 192
+ },
+ "comets/coma": {
+  "files": [
+   "coma.png"
+  ],
+  "size": [
+   338,
+   338
+  ],
+  "pivot": [
+   169.0,
+   169.0
+  ],
+  "px_per_unit": 3,
+  "note": "Soft glow around the nucleus; scale with sun distance"
+ },
+ "comets/nucleus_large": {
+  "files": [
+   "nucleus_large.png",
+   "nucleus_large_n.png"
+  ],
+  "size": [
+   81,
+   84
+  ],
+  "pivot": [
+   42.0,
+   42.0
+  ],
+  "px_per_unit": 3
+ },
+ "comets/nucleus_medium": {
+  "files": [
+   "nucleus_medium.png",
+   "nucleus_medium_n.png"
+  ],
+  "size": [
+   60,
+   60
+  ],
+  "pivot": [
+   30.0,
+   30.0
+  ],
+  "px_per_unit": 3
+ },
+ "comets/nucleus_small": {
+  "files": [
+   "nucleus_small.png",
+   "nucleus_small_n.png"
+  ],
+  "size": [
+   42,
+   42
+  ],
+  "pivot": [
+   21.0,
+   21.0
+  ],
+  "px_per_unit": 3
+ },
+ "comets/tail_dust_large": {
+  "files": [
+   "tail_dust_large.png"
+  ],
+  "size": [
+   457,
+   334
+  ],
+  "pivot": [
+   428.0,
+   266.0
+  ],
+  "px_per_unit": 3,
+  "note": "Tail at full size, pointing left (away from a sun on the right). Pivot is the nucleus. Scale and fade it with sun distance"
+ },
+ "comets/tail_dust_medium": {
+  "files": [
+   "tail_dust_medium.png"
+  ],
+  "size": [
+   373,
+   265
+  ],
+  "pivot": [
+   344.0,
+   206.0
+  ],
+  "px_per_unit": 3,
+  "note": "Tail at full size, pointing left (away from a sun on the right). Pivot is the nucleus. Scale and fade it with sun distance"
+ },
+ "comets/tail_dust_small": {
+  "files": [
+   "tail_dust_small.png"
+  ],
+  "size": [
+   320,
+   224
+  ],
+  "pivot": [
+   291.0,
+   171.0
+  ],
+  "px_per_unit": 3,
+  "note": "Tail at full size, pointing left (away from a sun on the right). Pivot is the nucleus. Scale and fade it with sun distance"
+ },
+ "comets/tail_ion_large": {
+  "files": [
+   "tail_ion_large.png"
+  ],
+  "size": [
+   479,
+   100
+  ],
+  "pivot": [
+   449.0,
+   50.0
+  ],
+  "px_per_unit": 3,
+  "note": "Tail at full size, pointing left (away from a sun on the right). Pivot is the nucleus. Scale and fade it with sun distance"
+ },
+ "comets/tail_ion_medium": {
+  "files": [
+   "tail_ion_medium.png"
+  ],
+  "size": [
+   406,
+   90
+  ],
+  "pivot": [
+   376.0,
+   45.0
+  ],
+  "px_per_unit": 3,
+  "note": "Tail at full size, pointing left (away from a sun on the right). Pivot is the nucleus. Scale and fade it with sun distance"
+ },
+ "comets/tail_ion_small": {
+  "files": [
+   "tail_ion_small.png"
+  ],
+  "size": [
+   345,
+   88
+  ],
+  "pivot": [
+   315.0,
+   44.0
+  ],
+  "px_per_unit": 3,
+  "note": "Tail at full size, pointing left (away from a sun on the right). Pivot is the nucleus. Scale and fade it with sun distance"
+ },
+ "effects/dust_sheet": {
+  "files": [
+   "dust_sheet.png"
+  ],
+  "size": [
+   169,
+   287
+  ],
+  "pivot": [
+   22.0,
+   282.0
+  ],
+  "px_per_unit": 3,
+  "note": "Dust sheet blown along the ground from the impact point (pivot). Drawn for ground on the left, sheet running up; mirror for the other direction"
+ },
+ "effects/fireball": {
+  "files": [
+   "fireball.png"
+  ],
+  "size": [
+   402,
+   402
+  ],
+  "pivot": [
+   201.0,
+   201.0
+  ],
+  "px_per_unit": 3
+ },
+ "effects/flame_atmosphere": {
+  "files": [
+   "flame_atmosphere.png"
+  ],
+  "size": [
+   353,
+   222
+  ],
+  "pivot": [
+   326.0,
+   111.0
+  ],
+  "px_per_unit": 3,
+  "note": "Pivot is the centre of the engine bell exit; flame points left. Bell half-width is 22 units: scale the sprite to the engine. Atmosphere flame: also scale.x 1.5 low down"
+ },
+ "effects/flame_vacuum": {
+  "files": [
+   "flame_vacuum.png"
+  ],
+  "size": [
+   353,
+   222
+  ],
+  "pivot": [
+   326.0,
+   111.0
+  ],
+  "px_per_unit": 3,
+  "note": "Pivot is the centre of the engine bell exit; flame points left. Bell half-width is 22 units: scale the sprite to the engine. Atmosphere flame: also scale.x 1.5 low down"
+ },
+ "effects/flame_white": {
+  "files": [
+   "flame_white.png"
+  ],
+  "size": [
+   353,
+   222
+  ],
+  "pivot": [
+   326.0,
+   111.0
+  ],
+  "px_per_unit": 3,
+  "note": "Pivot is the centre of the engine bell exit; flame points left. Bell half-width is 22 units: scale the sprite to the engine. Atmosphere flame: also scale.x 1.5 low down"
+ },
+ "effects/fragments/fragment_1": {
+  "files": [
+   "fragment_1.png"
+  ],
+  "size": [
+   101,
+   44
+  ],
+  "pivot": [
+   52.0,
+   24.0
+  ],
+  "px_per_unit": 3
+ },
+ "effects/fragments/fragment_2": {
+  "files": [
+   "fragment_2.png"
+  ],
+  "size": [
+   70,
+   35
+  ],
+  "pivot": [
+   33.0,
+   16.0
+  ],
+  "px_per_unit": 3
+ },
+ "effects/fragments/fragment_3": {
+  "files": [
+   "fragment_3.png"
+  ],
+  "size": [
+   73,
+   37
+  ],
+  "pivot": [
+   35.0,
+   17.0
+  ],
+  "px_per_unit": 3
+ },
+ "effects/fragments/fragment_4": {
+  "files": [
+   "fragment_4.png"
+  ],
+  "size": [
+   29,
+   65
+  ],
+  "pivot": [
+   12.0,
+   30.0
+  ],
+  "px_per_unit": 3
+ },
+ "effects/fragments/fragment_5": {
+  "files": [
+   "fragment_5.png"
+  ],
+  "size": [
+   47,
+   27
+  ],
+  "pivot": [
+   21.0,
+   13.0
+  ],
+  "px_per_unit": 3
+ },
+ "effects/fragments/fragment_6": {
+  "files": [
+   "fragment_6.png"
+  ],
+  "size": [
+   32,
+   33
+  ],
+  "pivot": [
+   15.0,
+   15.0
+  ],
+  "px_per_unit": 3
+ },
+ "effects/fragments/fragment_7": {
+  "files": [
+   "fragment_7.png"
+  ],
+  "size": [
+   27,
+   23
+  ],
+  "pivot": [
+   12.0,
+   10.0
+  ],
+  "px_per_unit": 3
+ },
+ "effects/fragments/fragment_8": {
+  "files": [
+   "fragment_8.png"
+  ],
+  "size": [
+   25,
+   20
+  ],
+  "pivot": [
+   12.0,
+   9.0
+  ],
+  "px_per_unit": 3
+ },
+ "effects/fragments/fragment_flame": {
+  "files": [
+   "fragment_flame.png"
+  ],
+  "size": [
+   261,
+   78
+  ],
+  "pivot": [
+   206.0,
+   39.0
+  ],
+  "px_per_unit": 3,
+  "note": "Draw over a fragment, pivot on the fragment centre, pointing left (downstream). Sized for a fragment about 8 units across"
+ },
+ "effects/glow_white": {
+  "files": [
+   "glow_white.png"
+  ],
+  "size": [
+   252,
+   252
+  ],
+  "pivot": [
+   126.0,
+   126.0
+  ],
+  "px_per_unit": 2,
+  "note": "Soft white glow for flashes, sparks and engine glow; tint with modulate"
+ },
+ "effects/plasma_blunt": {
+  "files": [
+   "plasma_blunt.png"
+  ],
+  "size": [
+   698,
+   600
+  ],
+  "pivot": [
+   655.0,
+   300.0
+  ],
+  "px_per_unit": 3,
+  "note": "Shock front, hot gas and streaks as one image, travel direction to the right. Pivot is the tip of the shock front"
+ },
+ "effects/plasma_pointed": {
+  "files": [
+   "plasma_pointed.png"
+  ],
+  "size": [
+   825,
+   420
+  ],
+  "pivot": [
+   785.0,
+   210.0
+  ],
+  "px_per_unit": 3,
+  "note": "Shock front, hot gas and streaks as one image, travel direction to the right. Pivot is the tip of the shock front"
+ },
+ "effects/plasma_wide": {
+  "files": [
+   "plasma_wide.png"
+  ],
+  "size": [
+   789,
+   560
+  ],
+  "pivot": [
+   749.0,
+   280.0
+  ],
+  "px_per_unit": 3,
+  "note": "Shock front, hot gas and streaks as one image, travel direction to the right. Pivot is the tip of the shock front"
+ },
+ "effects/puff_white": {
+  "files": [
+   "puff_white.png"
+  ],
+  "size": [
+   144,
+   144
+  ],
+  "pivot": [
+   72.0,
+   72.0
+  ],
+  "px_per_unit": 2,
+  "note": "Soft white puff for dust, smoke and tyre smoke; tint with modulate, scale up and fade out"
+ },
+ "effects/ripple_ring": {
+  "files": [
+   "ripple_ring.png"
+  ],
+  "size": [
+   612,
+   48
+  ],
+  "pivot": [
+   306.0,
+   24.0
+  ],
+  "px_per_unit": 3,
+  "note": "Scale up and fade. Draw the upper half behind the craft and the lower half in front"
+ },
+ "effects/splash_spray": {
+  "files": [
+   "splash_spray.png"
+  ],
+  "size": [
+   354,
+   224
+  ],
+  "pivot": [
+   177.0,
+   221.0
+  ],
+  "px_per_unit": 3,
+  "note": "Pivot at the waterline under the craft"
+ },
+ "parachutes/cluster_orange": {
+  "files": [
+   "cluster_orange.png",
+   "cluster_orange_n.png"
+  ],
+  "size": [
+   453,
+   202
+  ],
+  "pivot": [
+   4.0,
+   101.0
+  ],
+  "px_per_unit": 3,
+  "note": "With lines. Pivot is where the lines meet; the canopy trails to the right. Sway = small rotation about the pivot; breathing = small scale.y change; packed or limp = scale.y near 0.15 to 0.3"
+ },
+ "parachutes/cluster_torn": {
+  "files": [
+   "cluster_torn.png",
+   "cluster_torn_n.png"
+  ],
+  "size": [
+   516,
+   164
+  ],
+  "pivot": [
+   4.0,
+   82.0
+  ],
+  "px_per_unit": 3,
+  "note": "With lines. Pivot is where the lines meet; the canopy trails to the right. Sway = small rotation about the pivot; breathing = small scale.y change; packed or limp = scale.y near 0.15 to 0.3"
+ },
+ "parachutes/cluster_white": {
+  "files": [
+   "cluster_white.png",
+   "cluster_white_n.png"
+  ],
+  "size": [
+   519,
+   202
+  ],
+  "pivot": [
+   4.0,
+   101.0
+  ],
+  "px_per_unit": 3,
+  "note": "With lines. Pivot is where the lines meet; the canopy trails to the right. Sway = small rotation about the pivot; breathing = small scale.y change; packed or limp = scale.y near 0.15 to 0.3"
+ },
+ "parachutes/drogue": {
+  "files": [
+   "drogue.png",
+   "drogue_n.png"
+  ],
+  "size": [
+   545,
+   100
+  ],
+  "pivot": [
+   4.0,
+   50.0
+  ],
+  "px_per_unit": 3,
+  "note": "With lines. Pivot is where the lines meet; the canopy trails to the right. Sway = small rotation about the pivot; breathing = small scale.y change; packed or limp = scale.y near 0.15 to 0.3"
+ },
+ "parachutes/drogue_torn": {
+  "files": [
+   "drogue_torn.png",
+   "drogue_torn_n.png"
+  ],
+  "size": [
+   627,
+   92
+  ],
+  "pivot": [
+   4.0,
+   51.0
+  ],
+  "px_per_unit": 3,
+  "note": "With lines. Pivot is where the lines meet; the canopy trails to the right. Sway = small rotation about the pivot; breathing = small scale.y change; packed or limp = scale.y near 0.15 to 0.3"
+ },
+ "parachutes/main": {
+  "files": [
+   "main.png",
+   "main_n.png"
+  ],
+  "size": [
+   544,
+   382
+  ],
+  "pivot": [
+   4.0,
+   191.0
+  ],
+  "px_per_unit": 3,
+  "note": "With lines. Pivot is where the lines meet; the canopy trails to the right. Sway = small rotation about the pivot; breathing = small scale.y change; packed or limp = scale.y near 0.15 to 0.3"
+ },
+ "parachutes/main_medium": {
+  "files": [
+   "main_medium.png",
+   "main_medium_n.png"
+  ],
+  "size": [
+   420,
+   310
+  ],
+  "pivot": [
+   4.0,
+   155.0
+  ],
+  "px_per_unit": 3,
+  "note": "Main parachute sized for the lander landing scenes"
+ },
+ "parachutes/main_torn": {
+  "files": [
+   "main_torn.png",
+   "main_torn_n.png"
+  ],
+  "size": [
+   666,
+   334
+  ],
+  "pivot": [
+   4.0,
+   171.0
+  ],
+  "px_per_unit": 3,
+  "note": "With lines. Pivot is where the lines meet; the canopy trails to the right. Sway = small rotation about the pivot; breathing = small scale.y change; packed or limp = scale.y near 0.15 to 0.3"
+ },
+ "parachutes/ssto_drogue": {
+  "files": [
+   "ssto_drogue.png",
+   "ssto_drogue_n.png"
+  ],
+  "size": [
+   280,
+   142
+  ],
+  "pivot": [
+   4.0,
+   71.0
+  ],
+  "px_per_unit": 3,
+  "note": "Runway drogue with lines; pivot where the lines meet. Attach at the tail base"
+ },
+ "parachutes/streamer": {
+  "files": [
+   "streamer.png"
+  ],
+  "size": [
+   558,
+   77
+  ],
+  "pivot": [
+   4.0,
+   27.0
+  ],
+  "px_per_unit": 3,
+  "note": "With lines. Pivot is where the lines meet; the canopy trails to the right. Sway = small rotation about the pivot; breathing = small scale.y change; packed or limp = scale.y near 0.15 to 0.3"
+ },
+ "scenery/background/coastal_hills": {
+  "files": [
+   "coastal_hills.png"
+  ],
+  "size": [
+   1600,
+   66
+  ],
+  "pivot": [
+   0.0,
+   66.0
+  ],
+  "px_per_unit": 2,
+  "note": "Tiles seamlessly every 800 units (1600 px). Pivot is bottom left, on the horizon line"
+ },
+ "scenery/background/green_hills": {
+  "files": [
+   "green_hills.png"
+  ],
+  "size": [
+   1600,
+   53
+  ],
+  "pivot": [
+   0.0,
+   53.0
+  ],
+  "px_per_unit": 2,
+  "note": "Tiles seamlessly every 800 units (1600 px). Pivot is bottom left, on the horizon line"
+ },
+ "scenery/background/jungle_mountains": {
+  "files": [
+   "jungle_mountains.png"
+  ],
+  "size": [
+   1600,
+   216
+  ],
+  "pivot": [
+   0.0,
+   216.0
+  ],
+  "px_per_unit": 2,
+  "note": "Tiles seamlessly every 800 units (1600 px). Pivot is bottom left, on the horizon line"
+ },
+ "scenery/background/mars_ridges": {
+  "files": [
+   "mars_ridges.png"
+  ],
+  "size": [
+   1600,
+   92
+  ],
+  "pivot": [
+   0.0,
+   92.0
+  ],
+  "px_per_unit": 2,
+  "note": "Tiles seamlessly every 800 units (1600 px). Pivot is bottom left, on the horizon line"
+ },
+ "scenery/background/mesas": {
+  "files": [
+   "mesas.png"
+  ],
+  "size": [
+   1600,
+   92
+  ],
+  "pivot": [
+   0.0,
+   92.0
+  ],
+  "px_per_unit": 2,
+  "note": "Tiles seamlessly every 800 units (1600 px). Pivot is bottom left, on the horizon line"
+ },
+ "scenery/background/moon_hills": {
+  "files": [
+   "moon_hills.png"
+  ],
+  "size": [
+   1600,
+   57
+  ],
+  "pivot": [
+   0.0,
+   57.0
+  ],
+  "px_per_unit": 2,
+  "note": "Tiles every 800 units"
+ },
+ "scenery/background/sand_hills": {
+  "files": [
+   "sand_hills.png"
+  ],
+  "size": [
+   1600,
+   76
+  ],
+  "pivot": [
+   0.0,
+   76.0
+  ],
+  "px_per_unit": 2,
+  "note": "Tiles seamlessly every 800 units (1600 px). Pivot is bottom left, on the horizon line"
+ },
+ "scenery/background/snow_dusted_hills": {
+  "files": [
+   "snow_dusted_hills.png"
+  ],
+  "size": [
+   1600,
+   52
+  ],
+  "pivot": [
+   0.0,
+   52.0
+  ],
+  "px_per_unit": 2,
+  "note": "Tiles seamlessly every 800 units (1600 px). Pivot is bottom left, on the horizon line"
+ },
+ "scenery/background/snow_peak": {
+  "files": [
+   "snow_peak.png"
+  ],
+  "size": [
+   760,
+   256
+  ],
+  "pivot": [
+   0.0,
+   256.0
+  ],
+  "px_per_unit": 2
+ },
+ "scenery/buildings/aircraft_hangars": {
+  "files": [
+   "aircraft_hangars.png"
+  ],
+  "size": [
+   520,
+   62
+  ],
+  "pivot": [
+   0.0,
+   62.0
+  ],
+  "px_per_unit": 2,
+  "note": "Pivot is bottom left, on the ground line"
+ },
+ "scenery/buildings/assembly_building": {
+  "files": [
+   "assembly_building.png"
+  ],
+  "size": [
+   272,
+   172
+  ],
+  "pivot": [
+   0.0,
+   172.0
+  ],
+  "px_per_unit": 2,
+  "note": "Pivot is bottom left, on the ground line"
+ },
+ "scenery/buildings/control_tower": {
+  "files": [
+   "control_tower.png"
+  ],
+  "size": [
+   124,
+   239
+  ],
+  "pivot": [
+   0.0,
+   239.0
+  ],
+  "px_per_unit": 2,
+  "note": "Pivot is bottom left, on the ground line"
+ },
+ "scenery/buildings/distant_city": {
+  "files": [
+   "distant_city.png"
+  ],
+  "size": [
+   664,
+   172
+  ],
+  "pivot": [
+   0.0,
+   172.0
+  ],
+  "px_per_unit": 2,
+  "note": "Pivot is bottom left, on the ground line"
+ },
+ "scenery/buildings/habitat_domes": {
+  "files": [
+   "habitat_domes.png"
+  ],
+  "size": [
+   582,
+   94
+  ],
+  "pivot": [
+   0.0,
+   94.0
+  ],
+  "px_per_unit": 2,
+  "note": "Pivot is bottom left, on the ground line"
+ },
+ "scenery/buildings/industrial_facility": {
+  "files": [
+   "industrial_facility.png"
+  ],
+  "size": [
+   656,
+   188
+  ],
+  "pivot": [
+   0.0,
+   188.0
+  ],
+  "px_per_unit": 2,
+  "note": "Pivot is bottom left, on the ground line"
+ },
+ "scenery/buildings/launch_gantry_with_launch_stack": {
+  "files": [
+   "launch_gantry_with_launch_stack.png"
+  ],
+  "size": [
+   240,
+   264
+  ],
+  "pivot": [
+   0.0,
+   264.0
+  ],
+  "px_per_unit": 2,
+  "note": "Pivot is bottom left, on the ground line"
+ },
+ "scenery/ground/beach_strip": {
+  "files": [
+   "beach_strip.png"
+  ],
+  "size": [
+   440,
+   128
+  ],
+  "pivot": [
+   20.0,
+   0.0
+  ],
+  "px_per_unit": 2,
+  "note": "Goes between water and land; the white surf line is on its left edge"
+ },
+ "scenery/ground/grass": {
+  "files": [
+   "grass.png"
+  ],
+  "size": [
+   1600,
+   128
+  ],
+  "pivot": [
+   0.0,
+   0.0
+  ],
+  "px_per_unit": 2,
+  "note": "Tiles every 800 units; scroll it at ground speed"
+ },
+ "scenery/ground/jungle_floor": {
+  "files": [
+   "jungle_floor.png"
+  ],
+  "size": [
+   1600,
+   128
+  ],
+  "pivot": [
+   0.0,
+   0.0
+  ],
+  "px_per_unit": 2,
+  "note": "Tiles every 800 units; scroll it at ground speed"
+ },
+ "scenery/ground/mars_ground": {
+  "files": [
+   "mars_ground.png"
+  ],
+  "size": [
+   1600,
+   128
+  ],
+  "pivot": [
+   0.0,
+   0.0
+  ],
+  "px_per_unit": 2,
+  "note": "Tiles every 800 units; scroll it at ground speed"
+ },
+ "scenery/ground/moon_ground": {
+  "files": [
+   "moon_ground.png"
+  ],
+  "size": [
+   1280,
+   128
+  ],
+  "pivot": [
+   0.0,
+   0.0
+  ],
+  "px_per_unit": 2,
+  "note": "640 units wide, not tileable (craters); use as a fixed foreground"
+ },
+ "scenery/ground/runway": {
+  "files": [
+   "runway.png"
+  ],
+  "size": [
+   1600,
+   48
+  ],
+  "pivot": [
+   0.0,
+   0.0
+  ],
+  "px_per_unit": 2,
+  "note": "Tiles every 800 units; sits 8 units below the top of the ground tile"
+ },
+ "scenery/ground/sand": {
+  "files": [
+   "sand.png"
+  ],
+  "size": [
+   1600,
+   128
+  ],
+  "pivot": [
+   0.0,
+   0.0
+  ],
+  "px_per_unit": 2,
+  "note": "Tiles every 800 units; scroll it at ground speed"
+ },
+ "scenery/ground/tundra": {
+  "files": [
+   "tundra.png"
+  ],
+  "size": [
+   1600,
+   128
+  ],
+  "pivot": [
+   0.0,
+   0.0
+  ],
+  "px_per_unit": 2,
+  "note": "Tiles every 800 units; scroll it at ground speed"
+ },
+ "scenery/ground/water": {
+  "files": [
+   "water.png"
+  ],
+  "size": [
+   1600,
+   128
+  ],
+  "pivot": [
+   0.0,
+   0.0
+  ],
+  "px_per_unit": 2,
+  "note": "Tiles every 800 units"
+ },
+ "scenery/props/palm_tree": {
+  "files": [
+   "palm_tree.png"
+  ],
+  "size": [
+   96,
+   96
+  ],
+  "pivot": [
+   44.0,
+   94.0
+  ],
+  "px_per_unit": 2,
+  "note": "Pivot at the base of the trunk"
+ },
+ "scenery/sky/clouds": {
+  "files": [
+   "clouds.png"
+  ],
+  "size": [
+   1280,
+   356
+  ],
+  "pivot": [
+   0.0,
+   356.0
+  ],
+  "px_per_unit": 2
+ },
+ "scenery/sky/sky_dusty": {
+  "files": [
+   "sky_dusty.png"
+  ],
+  "size": [
+   640,
+   178
+  ],
+  "pivot": [
+   0.0,
+   178.0
+  ],
+  "px_per_unit": 1
+ },
+ "scenery/sky/sky_earth": {
+  "files": [
+   "sky_earth.png"
+  ],
+  "size": [
+   640,
+   178
+  ],
+  "pivot": [
+   0.0,
+   178.0
+  ],
+  "px_per_unit": 1
+ },
+ "scenery/sky/sky_mars": {
+  "files": [
+   "sky_mars.png"
+  ],
+  "size": [
+   640,
+   178
+  ],
+  "pivot": [
+   0.0,
+   178.0
+  ],
+  "px_per_unit": 1
+ },
+ "scenery/sky/sky_overcast": {
+  "files": [
+   "sky_overcast.png"
+  ],
+  "size": [
+   640,
+   178
+  ],
+  "pivot": [
+   0.0,
+   178.0
+  ],
+  "px_per_unit": 1
+ },
+ "scenery/sky/sky_stars": {
+  "files": [
+   "sky_stars.png"
+  ],
+  "size": [
+   1280,
+   356
+  ],
+  "pivot": [
+   0.0,
+   356.0
+  ],
+  "px_per_unit": 2
+ },
+ "ships/bullet": {
+  "files": [
+   "bullet.png",
+   "bullet_n.png",
+   "bullet_glow.png"
+  ],
+  "size": [
+   582,
+   186
+  ],
+  "pivot": [
+   261.0,
+   93.0
+  ],
+  "px_per_unit": 3,
+  "note": "Sphere or bullet ship seen from above, nose right"
+ },
+ "ships/habitat_parts/habitat_aft": {
+  "files": [
+   "habitat_aft.png",
+   "habitat_aft_n.png"
+  ],
+  "size": [
+   348,
+   168
+  ],
+  "pivot": [
+   393.0,
+   84.0
+  ],
+  "px_per_unit": 3,
+  "note": "Draw first: engine, tanks and aft axis"
+ },
+ "ships/habitat_parts/habitat_fore": {
+  "files": [
+   "habitat_fore.png",
+   "habitat_fore_n.png",
+   "habitat_fore_glow.png"
+  ],
+  "size": [
+   282,
+   108
+  ],
+  "pivot": [
+   -129.0,
+   54.0
+  ],
+  "px_per_unit": 3,
+  "note": "Draw after ring 2: forward axis, nose module and window"
+ },
+ "ships/habitat_parts/habitat_mid": {
+  "files": [
+   "habitat_mid.png",
+   "habitat_mid_n.png"
+  ],
+  "size": [
+   198,
+   36
+  ],
+  "pivot": [
+   63.0,
+   18.0
+  ],
+  "px_per_unit": 3,
+  "note": "Draw after ring 1: axis between the rings"
+ },
+ "ships/habitat_parts/habitat_ring_body": {
+  "files": [
+   "habitat_ring_body.png",
+   "habitat_ring_body_n.png"
+  ],
+  "size": [
+   126,
+   444
+  ],
+  "pivot": [
+   75.0,
+   222.0
+  ],
+  "px_per_unit": 3,
+  "note": "Ring body, same for both rings. Place pivot at the ring centre: ring 1 is 20 units aft of the ship pivot, ring 2 is 44 units forward"
+ },
+ "ships/habitat_parts/habitat_ring_face": {
+  "files": [
+   "habitat_ring_face.png"
+  ],
+  "size": [
+   444,
+   444
+  ],
+  "pivot": [
+   222.0,
+   222.0
+  ],
+  "px_per_unit": 3,
+  "note": "Rotating ring face, drawn face-on. In the game draw it with scale.x = 0.22 at the ring centre and rotate it; the two rings turn in opposite directions"
+ },
+ "ships/hollowed_asteroid": {
+  "files": [
+   "hollowed_asteroid.png",
+   "hollowed_asteroid_n.png",
+   "hollowed_asteroid_glow.png"
+  ],
+  "size": [
+   648,
+   372
+  ],
+  "pivot": [
+   333.0,
+   183.0
+  ],
+  "px_per_unit": 3,
+  "note": "Hollowed asteroid ship seen from above, nose right"
+ },
+ "ships/lander": {
+  "files": [
+   "lander.png",
+   "lander_n.png",
+   "lander_glow.png"
+  ],
+  "size": [
+   408,
+   492
+  ],
+  "pivot": [
+   219.0,
+   246.0
+  ],
+  "px_per_unit": 3,
+  "note": "Lander seen from above, nose right"
+ },
+ "ships/lander_parts/lander_body": {
+  "files": [
+   "lander_body.png",
+   "lander_body_n.png",
+   "lander_body_glow.png"
+  ],
+  "size": [
+   366,
+   330
+  ],
+  "pivot": [
+   177.0,
+   165.0
+  ],
+  "px_per_unit": 3,
+  "note": "Lander without legs (for stowed gear, splashdown and aerobraking)"
+ },
+ "ships/lander_parts/lander_leg": {
+  "files": [
+   "lander_leg.png",
+   "lander_leg_n.png"
+  ],
+  "size": [
+   137,
+   110
+  ],
+  "pivot": [
+   123.0,
+   96.0
+  ],
+  "px_per_unit": 3,
+  "note": "One leg, deployed position, pivot on the hinge. Hinge sits 32 units aft and 50 units to the side of the lander pivot. Mirror it (scale.y = -1) for the other side. Stowed = rotated 185 degrees, drawn under the body"
+ },
+ "ships/launch_stack": {
+  "files": [
+   "launch_stack.png",
+   "launch_stack_n.png"
+  ],
+  "size": [
+   816,
+   246
+  ],
+  "pivot": [
+   399.0,
+   123.0
+  ],
+  "px_per_unit": 3,
+  "note": "Classic launch stack seen from above, nose right"
+ },
+ "ships/lifting_body": {
+  "files": [
+   "lifting_body.png",
+   "lifting_body_n.png",
+   "lifting_body_glow.png"
+  ],
+  "size": [
+   588,
+   354
+  ],
+  "pivot": [
+   273.0,
+   177.0
+  ],
+  "px_per_unit": 3,
+  "note": "Lifting body craft seen from above, nose right"
+ },
+ "ships/linear_truss": {
+  "files": [
+   "linear_truss.png",
+   "linear_truss_n.png",
+   "linear_truss_glow.png"
+  ],
+  "size": [
+   834,
+   318
+  ],
+  "pivot": [
+   417.0,
+   159.0
+  ],
+  "px_per_unit": 3,
+  "note": "Linear truss ship seen from above, nose right"
+ },
+ "ships/modular": {
+  "files": [
+   "modular.png",
+   "modular_n.png",
+   "modular_glow.png"
+  ],
+  "size": [
+   720,
+   402
+  ],
+  "pivot": [
+   357.0,
+   201.0
+  ],
+  "px_per_unit": 3,
+  "note": "Modular ship or station seen from above, nose right"
+ },
+ "ships/rotating_habitat": {
+  "files": [
+   "rotating_habitat.png",
+   "rotating_habitat_n.png",
+   "rotating_habitat_glow.png"
+  ],
+  "size": [
+   804,
+   444
+  ],
+  "pivot": [
+   393.0,
+   222.0
+  ],
+  "px_per_unit": 3,
+  "note": "Rotating habitat seen from above, nose right, with two rings turning in opposite directions"
+ },
+ "ships/ssto_side/gear_main": {
+  "files": [
+   "gear_main.png",
+   "gear_main_n.png"
+  ],
+  "size": [
+   42,
+   69
+  ],
+  "pivot": [
+   21.0,
+   3.0
+  ],
+  "px_per_unit": 3,
+  "note": "Main gear, down position, pivot on the hinge. Stowed = rotated 90 degrees (swung aft), drawn under the hull"
+ },
+ "ships/ssto_side/gear_nose": {
+  "files": [
+   "gear_nose.png",
+   "gear_nose_n.png"
+  ],
+  "size": [
+   34,
+   69
+  ],
+  "pivot": [
+   17.0,
+   3.0
+  ],
+  "px_per_unit": 3,
+  "note": "Nose gear, as main gear"
+ },
+ "ships/ssto_side/ssto_side": {
+  "files": [
+   "ssto_side.png",
+   "ssto_side_n.png",
+   "ssto_side_glow.png"
+  ],
+  "size": [
+   678,
+   234
+  ],
+  "pivot": [
+   333.0,
+   171.0
+  ],
+  "px_per_unit": 3,
+  "note": "Side view, nose right, gear up. Gear hinges: main 68 units aft and 12 below the pivot, nose 65 units forward and 12 below"
+ },
+ "ships/tanker": {
+  "files": [
+   "tanker.png",
+   "tanker_n.png",
+   "tanker_glow.png"
+  ],
+  "size": [
+   798,
+   222
+  ],
+  "pivot": [
+   381.0,
+   111.0
+  ],
+  "px_per_unit": 3,
+  "note": "Propellant tanker seen from above, nose right"
+ }
+}

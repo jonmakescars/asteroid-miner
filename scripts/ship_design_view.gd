@@ -267,7 +267,11 @@ func _refresh() -> void:
 		shield_mass_kg = AeroBraking.shield_mass_kg(shield_cm, shield_area_m2)
 	var analysis := ShipCalc.analyse(stages, engines, rules, payload_kg + shield_mass_kg)
 	var lines: PackedStringArray = []
-	lines.append("Total delta-v: %s km/s" % _num(float(analysis["total_dv_ms"]) / 1000.0))
+	# Without cargo only the shield rides on top of the stages; the payload slider is the cargo capacity.
+	var empty_analysis := ShipCalc.analyse(stages, engines, rules, shield_mass_kg)
+	lines.append("Delta-v without payload: %s km/s" % _num(float(empty_analysis["total_dv_ms"]) / 1000.0))
+	lines.append("Delta-v with full payload (%s kg): %s km/s" % [
+			_num(payload_kg), _num(float(analysis["total_dv_ms"]) / 1000.0)])
 	lines.append("Total mass at launch: %s t" % _num(float(analysis["total_mass_kg"]) / 1000.0))
 	lines.append("Heat shield: %s t over %s m2, takes %s MJ/m2 of heat (used for aerobraking at Earth and Mars)" % [
 			_num(shield_mass_kg / 1000.0), _num(shield_area_m2), _num(AeroBraking.shield_capacity_mj_m2(shield_cm))])
@@ -289,7 +293,7 @@ func _refresh() -> void:
 	for reference in REFERENCE_DV:
 		lines.append("   %s: %s km/s" % [reference[0], str(reference[1])])
 	result_label.text = "\n".join(lines)
-	_save_design(stages, payload_kg, analysis)
+	_save_design(stages, payload_kg, analysis, empty_analysis)
 
 
 func _update_label(control: Dictionary) -> void:
@@ -309,7 +313,7 @@ func _input(event: InputEvent) -> void:
 ## Saves the current design so that the mission planner can use it. Besides the delta-v it stores the
 ## tank data of the equivalent single stage: total propellant, the average exhaust velocity weighted by
 ## propellant mass, and the dry mass that gives the same total delta-v (rocket equation).
-func _save_design(stages: Array, payload_kg: float, analysis: Dictionary) -> void:
+func _save_design(stages: Array, payload_kg: float, analysis: Dictionary, empty_analysis: Dictionary) -> void:
 	var file := FileAccess.open(DESIGN_PATH, FileAccess.WRITE)
 	if file == null:
 		return
@@ -322,6 +326,8 @@ func _save_design(stages: Array, payload_kg: float, analysis: Dictionary) -> voi
 	var ve_eff := momentum / propellant_kg
 	var total_dv_ms := float(analysis["total_dv_ms"])
 	var dry_eff := propellant_kg / maxf(exp(total_dv_ms / ve_eff) - 1.0, 0.000001)
+	# The same for the ship without cargo: the game adds the mass of the cargo it carries to this one.
+	var dry_empty := propellant_kg / maxf(exp(float(empty_analysis["total_dv_ms"]) / ve_eff) - 1.0, 0.000001)
 	file.store_string(JSON.stringify({
 		"name": ship_name.strip_edges() if ship_name.strip_edges() != "" else "Unnamed ship",
 		"payload_kg": payload_kg,
@@ -334,4 +340,6 @@ func _save_design(stages: Array, payload_kg: float, analysis: Dictionary) -> voi
 		"propellant_kg": propellant_kg,
 		"ve_eff_ms": ve_eff,
 		"dry_eff_kg": dry_eff,
+		"dry_empty_kg": dry_empty,
+		"empty_dv_ms": float(empty_analysis["total_dv_ms"]),
 	}, "\t"))
