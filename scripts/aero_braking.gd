@@ -250,8 +250,16 @@ static func _speed_at_periapsis(gm: float, r1: float, r2: float) -> float:
 ## orbit (rp_t, ra_t). If ra reaches rp_t: raise the periapsis to rp_t at the apoapsis, then move the apoapsis
 ## to ra_t at the new periapsis. Otherwise first raise the apoapsis to ra_t at the periapsis, then the
 ## periapsis at the new apoapsis.
+## True if the apoapsis is set to the target apoapsis with a burn right after the last pass (at the periapsis),
+## and the periapsis raised half an orbit later at the new apoapsis. That is the case when the passes leave the
+## apoapsis below the target periapsis, or above the target apoapsis: the ship does not coast out to a far
+## apoapsis and come back first.
+static func burns_at_once(ra: float, rp_t: float, ra_t: float) -> bool:
+	return ra < rp_t or ra > ra_t * 1.005
+
+
 static func final_dv(gm: float, rp: float, ra: float, rp_t: float, ra_t: float) -> float:
-	if ra >= rp_t:
+	if not burns_at_once(ra, rp_t, ra_t):
 		var raise_periapsis := absf(_speed_at_apoapsis(gm, rp_t, ra) - _speed_at_apoapsis(gm, rp, ra))
 		var move_apoapsis := absf(_speed_at_periapsis(gm, rp_t, ra_t) - _speed_at_periapsis(gm, rp_t, ra))
 		return raise_periapsis + move_apoapsis
@@ -445,13 +453,13 @@ static func apply(plan: Dictionary, enabled: bool, n: int, h_km: float, recenter
 	var legs: Array = []
 	var entry_times: Array = []   # when the ship reaches the upper atmosphere before each pass
 	var lead_days := (float(result["seconds"]) / float(n) * 0.5 + 60.0) / 86400.0
-	var apoapsis_too_low := ra < rp_t
+	var apoapsis_too_low := burns_at_once(ra, rp_t, ra_t)
 	for i in n:
 		entry_times.append(t - lead_days)
 		var last := i == n - 1
 		var ra_i := float(ras[i])
 		if last and apoapsis_too_low:
-			ra_i = ra_t   # the apoapsis is raised with a burn at once
+			ra_i = ra_t   # the apoapsis is set to the target apoapsis with a burn at once
 		var period := _period_days(gm, 0.5 * (rp + ra_i))
 		legs.append({"parent": plan["target_id"], "segment": _ellipse(gm, rp, ra_i, t, phase, 0.0), "t_start": t,
 				"label": "Aerobraking pass %d of %d" % [i + 1, n] if not last else "After aerobraking pass %d of %d" % [n, n],

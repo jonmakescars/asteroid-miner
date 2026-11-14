@@ -292,3 +292,17 @@ The top bar shows "axis" again (periapsis direction). 10g and the first 10h atte
 ## Step 10u – drag delay after zooming
 - One-finger dragging is blocked for PAN_DELAY_MS (0.5 s) after the last pinch / wheel movement; while blocked the drag start point follows the
   finger, so that the view does not jump when one finger leaves the screen a little before the other.
+
+## Step 10v - body sprites (untested)
+- New `scripts/sprite_library.gd` (`class_name SpriteLibrary`): finds the pack in `res://sprites/` or `res://asteroid-miner-sprites/sprites/`, loads textures, normal maps, pivots from `sprites.json` (image centre if the json is unreadable) and the shader `sprite_lit.gdshader`. **Run `godot --headless --import` once** (new class_name).
+- `orbit_view.gd`: bodies are drawn as Sprite2D nodes in a layer behind the control's own drawing, scale = radius_px / 192. They fade in over the coloured disc between 2.5 and 7 px radius; the small-body ring is unchanged. No rotation (tilted planets stay fixed in space). Light direction = Sun direction on screen (planets/moons elevation 0). Sun unlit. Earth snow overlay opacity = 0.5 - 0.5 * dot(to_sun, up). Rings drawn if a `<id>_rings` sprite exists.
+- Ship sprites (glow, flame) and the landing/burn-up animations are not yet integrated.
+
+## Step 10w - sprite jitter fix
+A body drawn by two scenes (e.g. Ceres by the Sun's scene and its own) used the far, 32-bit-imprecise position. Sprite requests now carry the scene rank; the camera body's own scene wins, opacity is the larger of the two.
+
+## Step 10x - body drawn once
+Bodies that two scenes both draw (e.g. Ceres in the Sun's scene and its own) now get their disc, name and sprite from one scene only (the camera's own scene if visible), with the larger opacity.
+
+## Step 10y - capture burn at the last aerobraking pass
+Before, when the passes left the apoapsis above the target apoapsis, the ship coasted out to that far apoapsis, raised the periapsis there (cheap) and came back to lower the apoapsis at the new periapsis. Not a g-limit: just the cheapest sequence in delta-v, but it takes weeks. Now `AeroBraking.burns_at_once`: if the apoapsis after the last pass is below the target periapsis or more than 0.5% above the target apoapsis, the apoapsis is set to the target apoapsis with a burn right after the last pass; the periapsis is raised half an orbit later. A few % more delta-v at most. Several passes (planner or player) work as before; the burn follows the last one.

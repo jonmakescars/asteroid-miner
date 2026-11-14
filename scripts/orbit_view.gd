@@ -76,6 +76,13 @@ var auto_frame := ""            # the body the "auto" view currently shows (see 
 var destination_ids: Array = []  # what the destination picker currently offers
 var picker_origin := ""         # the body the picker was filled for
 
+var sprite_layer: Node2D        # the body sprites; drawn behind this control's own drawing (lines, names, the ship)
+var sprite_nodes: Dictionary = {}    # sprite key -> Sprite2D
+var current_scene := ""         # the scene being drawn
+var marker_owner: Dictionary = {}        # body id -> [scene that draws its marker, rank]
+var marker_owner_alpha: Dictionary = {}  # body id -> opacity of its marker
+var scene_rank := 0              # 0 while drawing the camera body's own scene (its positions are exact), else 1
+var sprite_requests: Dictionary = {}  # what _draw wants shown this frame: sprite key -> request
 var bar: TopBar
 var info_label: RichTextLabel
 var target_picker: OptionButton
@@ -1042,6 +1049,12 @@ func _info_text() -> String:
 # ---------------------------------------------------------------- drawing
 
 func _draw() -> void:
+	sprite_requests.clear()
+	_draw_map()
+	_apply_sprites()
+
+
+func _draw_map() -> void:
 	if cam_body == "":
 		return
 	var centre := _view_centre()
@@ -1054,14 +1067,31 @@ func _draw() -> void:
 		scene_ids.append(str(parent))
 	scene_ids.append(cam_body)
 	scene_ids.append_array(children[cam_body])
-	for id in scene_ids:
-		var radius_px := GameState.view_radius_km(str(id), time_jd) * cam_scale
+	# A body can appear in two scenes (as a child of one and as the centre of the other). Its marker (disc, name, sprite)
+	# is drawn only once, by the scene closest to the camera that is visible, with the larger of the opacities.
+	var scene_alphas: Array = []
+	marker_owner.clear()
+	marker_owner_alpha.clear()
+	for n in scene_ids.size():
+		var id := str(scene_ids[n])
+		var radius_px := GameState.view_radius_km(id, time_jd) * cam_scale
 		var visible_enough := smoothstep(16.0, 60.0, radius_px)
 		var too_big := 1.0 - smoothstep(1.6 * half_extent, 5.0 * half_extent, radius_px)
-		line_alpha = visible_enough * too_big
-		marker_alpha = visible_enough
+		scene_alphas.append([visible_enough * too_big, visible_enough])
+		if visible_enough > 0.01:
+			var rank := 0 if id == cam_body else 1
+			for body_id: String in [id] + (children[id] as Array):
+				marker_owner_alpha[body_id] = maxf(float(marker_owner_alpha.get(body_id, 0.0)), visible_enough)
+				if not marker_owner.has(body_id) or rank < int(marker_owner[body_id][1]):
+					marker_owner[body_id] = [id, rank]
+	for n in scene_ids.size():
+		var id := str(scene_ids[n])
+		line_alpha = float(scene_alphas[n][0])
+		marker_alpha = float(scene_alphas[n][1])
+		scene_rank = 0 if id == cam_body else 1
 		if line_alpha > 0.01 or marker_alpha > 0.01:
-			_draw_scene(str(id), _screen_of(str(id)), cam_scale)
+			current_scene = id
+			_draw_scene(id, _screen_of(id), cam_scale)
 	line_alpha = 1.0
 	marker_alpha = 1.0
 	if GameState.ship_lost:
@@ -1179,11 +1209,18 @@ func _to_screen(position_km: Vector2, centre: Vector2, px_per_km: float) -> Vect
 
 
 func _draw_body(id: String, screen_position: Vector2, px_per_km: float) -> void:
+	if marker_owner.has(id) and str(marker_owner[id][0]) != current_scene:
+		return   # another scene draws this body's marker
+	if marker_owner_alpha.has(id):
+		marker_alpha = float(marker_owner_alpha[id])
 	var body: Dictionary = bodies[id]
 	var true_radius_px := float(body["radius_km"]) * px_per_km
 	var radius_px := maxf(MIN_BODY_RADIUS_PX, true_radius_px)
 	var colour := _mfade(Color.html(body["draw_color"]))
-	draw_circle(screen_position, radius_px, colour)
+	# Big enough to see: the sprite fades in over the coloured disc.
+	var sprite_a := _place_body_sprites(id, screen_position, true_radius_px)
+	if sprite_a < 1.0:
+		draw_circle(screen_position, radius_px, Color(colour.r, colour.g, colour.b, colour.a * (1.0 - sprite_a)))
 	if true_radius_px < RING_BELOW_PX:
 		draw_arc(screen_position, RING_RADIUS_PX, 0.0, TAU, 32, colour, 1.5, true)
 		radius_px = RING_RADIUS_PX
@@ -1192,3 +1229,80 @@ func _draw_body(id: String, screen_position: Vector2, px_per_km: float) -> void:
 		draw_rect(Rect2(screen_position + Vector2(-radius_px - 9.0 - 9.0 * n, -radius_px - 9.0), Vector2(7, 7)), _mfade(Color(1.0, 0.6, 0.2)))
 	draw_string(ThemeDB.fallback_font, screen_position + Vector2(radius_px + 4.0, 5.0), body["name"],
 			HORIZONTAL_ALIGNMENT_LEFT, -1, 16, _mfade(Color(1, 1, 1, 0.8)))
+
+
+## Asks for the sprites of a body (and its rings, snow, ...) and returns how opaque they are (0 when it is too small).
+func _place_body_sprites(id: String, screen_position: Vector2, true_radius_px: float) -> float:
+	var alpha := smoothstep(2.5, 7.0, true_radius_px) * marker_alpha
+	if alpha <= 0.0:
+		return 0.0
+	var key := SpriteLibrary.body_key(id)
+	if key == "":
+		return 0.0
+	var sprite_scale := true_radius_px / SpriteLibrary.DISC_RADIUS_PX
+	# Bodies keep their orientation on the screen (tilted planets must not turn with their orbit), so the light
+	# comes from the direction of the Sun on the screen.
+	var sun_dir := Vector2.RIGHT
+	if id != "sun":
+		var to_sun := GameState.body_rel_to(id, "sun", time_jd)
+		sun_dir = Vector2(to_sun.x, -to_sun.y).normalized()
+	var lit := id != "sun"
+	_request_sprite(key, key, screen_position, sprite_scale, sun_dir, alpha, lit)
+	if id == "earth":
+		# Northern winter: snow fades in when the north pole (the top of the sprite) leans away from the Sun.
+		var snow := clampf(0.5 - 0.5 * sun_dir.dot(Vector2.UP), 0.0, 1.0)
+		_request_sprite("bodies/earth_snow", "bodies/earth_snow", screen_position, sprite_scale, sun_dir, alpha * snow, true)
+	for ring_key in ["bodies/%s_rings" % id]:
+		if not SpriteLibrary.entry(ring_key).is_empty():
+			_request_sprite(ring_key, ring_key, screen_position, sprite_scale, sun_dir, alpha, false)
+	return alpha / maxf(marker_alpha, 0.0001)
+
+
+func _request_sprite(node_key: String, sprite_key: String, screen_position: Vector2, sprite_scale: float, sun_dir: Vector2, alpha: float, lit: bool) -> void:
+	if sprite_requests.has(node_key):
+		# The same body drawn by two scenes at once: the camera body's own scene has exact positions (the others are
+		# millions of pixels away and jitter in 32-bit floats), so its position wins; the opacity is the larger one.
+		var earlier: Dictionary = sprite_requests[node_key]
+		alpha = maxf(alpha, float(earlier["alpha"]))
+		if int(earlier["rank"]) < scene_rank:
+			earlier["alpha"] = alpha
+			return
+	sprite_requests[node_key] = {"sprite": sprite_key, "pos": screen_position, "scale": sprite_scale, "sun": sun_dir, "alpha": alpha, "lit": lit, "rank": scene_rank}
+
+
+## Shows the requested sprites (creating the nodes the first time) and hides the rest.
+func _apply_sprites() -> void:
+	if sprite_layer == null:
+		sprite_layer = Node2D.new()
+		sprite_layer.show_behind_parent = true
+		add_child(sprite_layer)
+	for node_key: String in sprite_requests:
+		var request: Dictionary = sprite_requests[node_key]
+		var info := SpriteLibrary.entry(str(request["sprite"]))
+		if info.is_empty():
+			continue
+		var node: Sprite2D = sprite_nodes.get(node_key)
+		if node == null:
+			node = Sprite2D.new()
+			node.centered = false
+			node.texture = info["texture"]
+			node.offset = -(info["pivot"] as Vector2)
+			node.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+			var material := SpriteLibrary.lit_material(info["normal"] as Texture2D)
+			if material != null:
+				node.set_meta("lit_material", material)
+			sprite_layer.add_child(node)
+			sprite_nodes[node_key] = node
+		node.visible = true
+		node.position = request["pos"]
+		node.scale = Vector2.ONE * float(request["scale"])
+		node.modulate = Color(1, 1, 1, float(request["alpha"]))
+		var lit_material: ShaderMaterial = node.get_meta("lit_material", null)
+		if bool(request["lit"]) and lit_material != null:
+			node.material = lit_material
+			lit_material.set_shader_parameter("sun_dir", request["sun"])
+		else:
+			node.material = null
+	for node_key: String in sprite_nodes:
+		if not sprite_requests.has(node_key):
+			(sprite_nodes[node_key] as Sprite2D).visible = false
