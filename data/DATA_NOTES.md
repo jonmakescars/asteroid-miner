@@ -306,3 +306,26 @@ Bodies that two scenes both draw (e.g. Ceres in the Sun's scene and its own) now
 
 ## Step 10y - capture burn at the last aerobraking pass
 Before, when the passes left the apoapsis above the target apoapsis, the ship coasted out to that far apoapsis, raised the periapsis there (cheap) and came back to lower the apoapsis at the new periapsis. Not a g-limit: just the cheapest sequence in delta-v, but it takes weeks. Now `AeroBraking.burns_at_once`: if the apoapsis after the last pass is below the target periapsis or more than 0.5% above the target apoapsis, the apoapsis is set to the target apoapsis with a burn right after the last pass; the periapsis is raised half an orbit later. A few % more delta-v at most. Several passes (planner or player) work as before; the burn follows the last one.
+
+## Step 10z - ship sprite (untested)
+- The ship is drawn with `ships/modular` (constant `SHIP_SPRITE` in orbit_view.gd, until ship design picks the hull), 36 px long at every zoom, pointing along its velocity on the screen, lit by the Sun (elevation 0.56), with the `_glow` layer added on top (additive blend).
+- Engine flame (`effects/flame_vacuum`) while a burn is going on: `GameState.burning_at(jd)` (morph window of a non-pass leg; capture legs now carry `is_pass`). The flame is placed at the left edge of the hull (+12 px); adjust `ship_flame.position` if it sits wrong.
+- The triangle is still drawn if the sprite pack is missing. Aerobraking plasma and the other effects are not integrated yet.
+
+## Step 10aa - ship view changes
+- One-finger drag delay after a zoom: 0.25 s (`PAN_DELAY_MS`).
+- The ship is the white triangle until the sprite (36 px) would cover at most 25% of the diameter of the body it orbits (body radius >= 72 px); between 48 and 72 px the two cross-fade.
+- Ship lock: when the camera is on the body the ship orbits and that body's centre is farther than half the smaller screen dimension from the screen centre, `cam_offset` follows the ship. Dragging releases the lock until the body centre is in view again; zooming out by hand and the automatic view change work as before.
+- Shadow: the ship is lit at 25% (`SHIP_SHADOW_LIGHT`) inside the cylinder shadow of the body it orbits (soft edge, 2% of the radius); the glow layer stays bright. Done through `sun_strength` and `ambient` of the shader.
+
+## Step 10ab - ship focus, tap pool, lock fix
+- Ship lock now needs the view to be zoomed beyond the normal view of the body the ship orbits (`_ship_locked`), works whatever body the camera is counted from, and dragging is ignored while locked (zoom out to leave). The old "released by dragging" flag (which could stay stuck after a stray drag at the end of a pinch) is gone.
+- Double tap on the ship (target `"@ship"`, tappable when the view shows the ship's body in its own size) zooms to the ship (0.7 s, same animation as bodies); the ship then stays locked in the centre. Double tap again: zoom out to the body it orbits. `_ship_focus_scale()` puts the orbit at 1.5 x half the smaller screen dimension.
+- Taps hit only: the camera body, its parent, and either its moons and the ship (view at least 0.7 x the body's own view) or the parent's other children (zoomed out). A tap on a planet in the solar view no longer hits the moon on top of it.
+
+## Step 10ac - lock only near the ship, softer shadow
+- `_ship_locked` also requires the ship to be within 0.6 x the larger screen dimension of the screen centre. Zooming to the Moon (ship orbits Earth) or to Mars no longer snaps to the ship.
+- Shadow edge width grows with the ship's altitude: 2% of the body radius near the surface up to 62% at three radii.
+
+## Step 10ad - time controls under big bodies
+A body whose on-screen radius is over 60 px no longer takes taps in the bottom third of the screen (the tap changes the warp); before, a zoomed-in planet covering the bottom swallowed them.

@@ -13,6 +13,14 @@ const SKIP_LEAD_DAYS := 120.0 / 86400.0  # "skip to departure" stops two minutes
 const LATE_LAUNCH_DAYS := 300.0 / 86400.0  # a plan can still be launched this long after its departure time
 const MIN_LAUNCH_DELAY_DAYS := 10.0 / 86400.0  # a plan never starts earlier than this after "now"
 const MIN_BODY_RADIUS_PX := 3.0
+const BIG_BODY_PX := 60.0             # a body bigger than this (radius on the screen) does not take taps in the time-control area
+const SHIP_FOCUS := "@ship"            # the name of the ship as the target of a tap or a zoom
+const SHIP_SPRITE := "ships/modular"   # until the ship design chooses the hull
+const SHIP_LENGTH_PX := 36.0           # the ship is a marker: it keeps this length on the screen at every zoom
+const SHIP_FULL_BODY_FRACTION := 0.25  # the sprite is shown in full once it covers at most this part of the body's diameter ...
+const SHIP_FADE_FROM := 0.667          # ... and is replaced by the triangle below this fraction of that size (smooth transition)
+const SHIP_SHADOW_LIGHT := 0.25        # brightness of the ship in the shadow of the body it orbits
+const SHIP_VELOCITY_STEP_DAYS := 60.0 / 86400.0
 const RING_RADIUS_PX := 10.0
 const RING_BELOW_PX := 2.0         # a body whose true radius is smaller than this many pixels gets a ring around it
 const ORBIT_SAMPLES := 160
@@ -21,7 +29,7 @@ const ZOOM_SECONDS := 0.7          # a change of the view is a zoom of this many
 const DOUBLE_TAP_MS := 400         # two taps on the same body within this time focus the view on it
 const MAX_PX_PER_KM := 2.0         # the most the view can be zoomed in by hand
 const MIN_SUN_FIT := 0.25          # the most it can be zoomed out: this fraction of the scale that fits the Sun's system
-const PAN_DELAY_MS := 500          # one-finger dragging is blocked this long after a zoom
+const PAN_DELAY_MS := 250          # one-finger dragging is blocked this long after a zoom
 const DRAG_START_PX := 12.0        # a finger that moves this far is dragging the view, not tapping
 const SNAP_OUT := 0.6667           # zooming out until the view is 50% wider than a body's own view switches to the view of the body it orbits
 const TAP_REACH_PX := 26.0         # a tap this close to a body (besides its size) counts as a tap on it
@@ -82,6 +90,11 @@ var current_scene := ""         # the scene being drawn
 var marker_owner: Dictionary = {}        # body id -> [scene that draws its marker, rank]
 var marker_owner_alpha: Dictionary = {}  # body id -> opacity of its marker
 var scene_rank := 0              # 0 while drawing the camera body's own scene (its positions are exact), else 1
+var ship_layer: Node2D          # the ship sprite, drawn over this control's own drawing
+var ship_node: Sprite2D
+var ship_flame: Sprite2D
+var ship_request: Dictionary = {}
+var ship_angle := 0.0
 var sprite_requests: Dictionary = {}  # what _draw wants shown this frame: sprite key -> request
 var bar: TopBar
 var info_label: RichTextLabel
@@ -305,6 +318,10 @@ func _gui_input(event: InputEvent) -> void:
 		dragged = false
 		return
 	var hit := _body_at(click.position)
+	# A body so big that it fills the bottom of the screen must not swallow the taps for the time controls there.
+	if hit != "" and hit != SHIP_FOCUS and click.position.y >= size.y * 0.67 \
+			and float(bodies[hit]["radius_km"]) * cam_scale > BIG_BODY_PX:
+		hit = ""
 	if hit != "":
 		# A tap on a body does not change the warp; two quick taps on the same body zoom to it.
 		var now := Time.get_ticks_msec()
@@ -358,9 +375,25 @@ func _screen_of(id: String) -> Vector2:
 func _body_at(point: Vector2) -> String:
 	if cam_body == "" or anim_target != "":
 		return ""
+	# Only what the view is about can be tapped: the body of the view, the body it orbits and (once the view shows
+	# the body in its own size) its moons and the ship; zoomed out, the bodies next to it instead. So a tap on a
+	# planet in the solar system view never hits the moon that lies on top of it.
+	var pool: Array = [cam_body]
+	var parent: Variant = bodies[cam_body]["parent"]
+	var close := cam_scale >= 0.7 * _fit_scale(cam_body)
+	if parent != null:
+		pool.append(str(parent))
+		if not close:
+			pool.append_array(children[str(parent)])
+	if close:
+		pool.append_array(children[cam_body])
+		if not GameState.ship_lost and not GameState.legs.is_empty() and _ship_parent() == cam_body:
+			var ship_point := _to_screen(GameState.ship_rel(cam_body, time_jd) - cam_offset, _view_centre(), cam_scale)
+			if ship_point.distance_to(point) <= TAP_REACH_PX:
+				return SHIP_FOCUS
 	var best := ""
 	var best_distance := INF
-	for id in bodies.keys():
+	for id in pool:
 		var radius_px := maxf(float(bodies[id]["radius_km"]) * cam_scale, RING_RADIUS_PX)
 		var distance := _screen_of(str(id)).distance_to(point)
 		if distance <= radius_px + TAP_REACH_PX and distance < best_distance:
@@ -372,6 +405,13 @@ func _body_at(point: Vector2) -> String:
 ## Double tap on a body: the view zooms to it. A double tap on the body the view is already on zooms out to the
 ## body it orbits (back to the automatic view when that is the Sun).
 func _focus_body(id: String) -> void:
+	if id == SHIP_FOCUS:
+		# The ship in focus (the view follows it): another double tap zooms out to the body it orbits.
+		if _ship_locked() and absf(log(cam_scale / _ship_focus_scale())) < 0.35:
+			_start_zoom(_ship_parent(), true)
+		else:
+			_start_zoom(SHIP_FOCUS, true)
+		return
 	var on_it := id == cam_body and absf(log(cam_scale / _fit_scale(id))) < 0.35
 	if not on_it:
 		_start_zoom(id, true)
@@ -418,16 +458,21 @@ func _update_camera(delta: float) -> void:
 		anim_t += delta / ZOOM_SECONDS
 		var w := smoothstep(0.0, 1.0, clampf(anim_t, 0.0, 1.0))
 		var from_point := GameState.body_rel_to(cam_body, anim_body0, time_jd) + anim_offset0
-		var to_point := GameState.body_rel_to(cam_body, anim_target, time_jd)
-		var scale_end := _fit_scale(anim_target)
+		var to_ship := anim_target == SHIP_FOCUS
+		var to_point := GameState.ship_rel(cam_body, time_jd) if to_ship else GameState.body_rel_to(cam_body, anim_target, time_jd)
+		var scale_end := _ship_focus_scale() if to_ship else _fit_scale(anim_target)
 		var scale_now := exp(lerpf(log(anim_scale0), log(scale_end), w))
 		var span := 1.0 / anim_scale0 - 1.0 / scale_end
 		var k := w if absf(span) < 1.0e-30 else (1.0 / anim_scale0 - 1.0 / scale_now) / span
 		cam_offset = from_point + (to_point - from_point) * k
 		cam_scale = scale_now
 		if anim_t >= 1.0:
-			cam_body = anim_target
-			cam_offset = Vector2.ZERO
+			if to_ship:
+				cam_body = _ship_parent()
+				cam_offset = GameState.ship_rel(cam_body, time_jd)
+			else:
+				cam_body = anim_target
+				cam_offset = Vector2.ZERO
 			cam_scale = scale_end
 			free_camera = anim_free
 			anim_target = ""
@@ -435,6 +480,46 @@ func _update_camera(delta: float) -> void:
 		cam_offset = GameState.body_rel_to(cam_body, target, time_jd)
 		cam_scale = _fit_scale(target)
 	_rebase()
+	_lock_to_ship()
+
+
+## The body the ship orbits now.
+func _ship_parent() -> String:
+	return str(GameState.legs[GameState.leg_index_at(time_jd)]["parent"])
+
+
+## True when the view is zoomed in beyond the normal view of the body the ship orbits and the centre of that body
+## is farther from the middle of the screen than half the smaller screen dimension: the view then follows the
+## ship instead of the body.
+func _ship_locked() -> bool:
+	if cam_body == "" or anim_target != "" or GameState.ship_lost or GameState.legs.is_empty():
+		return false
+	var orbited := _ship_parent()
+	if cam_scale < _fit_scale(orbited):
+		return false
+	# Only a view that is about the ship: the ship must be on the screen (not far away, like when the view is
+	# on the Moon and the ship orbits the Earth) ...
+	var ship_from_centre := GameState.ship_rel(cam_body, time_jd) - cam_offset
+	if ship_from_centre.length() * cam_scale > maxf(size.x, size.y) * 0.6:
+		return false
+	# ... and the centre of its body must be out of the middle of the screen.
+	var body_from_centre := GameState.body_rel_to(cam_body, orbited, time_jd) - cam_offset
+	return body_from_centre.length() * cam_scale > minf(size.x, size.y) * 0.5
+
+
+func _lock_to_ship() -> void:
+	if _ship_locked():
+		cam_offset = GameState.ship_rel(cam_body, time_jd)
+		free_camera = true
+
+
+## Pixels per km at which the ship is in focus: the body it orbits is large and the ship is on its orbit well
+## outside the middle of the screen, so the view follows the ship.
+func _ship_focus_scale() -> float:
+	var orbited := _ship_parent()
+	var distance := maxf(GameState.ship_rel(orbited, time_jd).length(), 1.0)
+	var wanted := 0.75 * minf(size.x, size.y) / distance
+	return clampf(maxf(wanted, _fit_scale(orbited) * 1.01), 0.0, MAX_PX_PER_KM)
 
 
 ## Pinch, wheel: zooms by a factor so that the point under the fingers (point) ends up under the new
@@ -460,8 +545,8 @@ func _zoom_about(point: Vector2, factor: float, new_point: Vector2) -> void:
 
 ## One finger drags the view: the picture moves with the finger.
 func _pan(screen_delta: Vector2) -> void:
-	if cam_body == "" or anim_target != "":
-		return
+	if cam_body == "" or anim_target != "" or _ship_locked():
+		return   # (a view that follows the ship cannot be dragged: zoom out first)
 	cam_offset -= Vector2(screen_delta.x, -screen_delta.y) / cam_scale
 	free_camera = true
 	_rebase()
@@ -1050,8 +1135,10 @@ func _info_text() -> String:
 
 func _draw() -> void:
 	sprite_requests.clear()
+	ship_request = {}
 	_draw_map()
 	_apply_sprites()
+	_apply_ship()
 
 
 func _draw_map() -> void:
@@ -1097,8 +1184,24 @@ func _draw_map() -> void:
 	if GameState.ship_lost:
 		return   # the ship and its course are gone
 	_draw_ship_orbit(half_extent)
-	var p := _to_screen(GameState.ship_rel(cam_body, time_jd) - cam_offset, centre, cam_scale)
-	draw_colored_polygon(PackedVector2Array([p + Vector2(0, -7), p + Vector2(6, 5), p + Vector2(-6, 5)]), Color.WHITE)
+	var ship_km := GameState.ship_rel(cam_body, time_jd)
+	var p := _to_screen(ship_km - cam_offset, centre, cam_scale)
+	# The ship points the way it flies (on the screen).
+	var ahead := GameState.ship_rel(cam_body, time_jd + SHIP_VELOCITY_STEP_DAYS) - GameState.ship_rel(cam_body, time_jd - SHIP_VELOCITY_STEP_DAYS)
+	if ahead.length_squared() > 0.0:
+		ship_angle = Vector2(ahead.x, -ahead.y).angle()
+	var to_sun := GameState.body_rel_to(cam_body, "sun", time_jd) - ship_km if cam_body != "sun" else -ship_km
+	# The sprite replaces the triangle once it would cover at most a quarter of the body's diameter (smoothly).
+	var orbited := str(GameState.legs[GameState.leg_index_at(time_jd)]["parent"])
+	var body_px := float(bodies[orbited]["radius_km"]) * cam_scale
+	var full_px := SHIP_LENGTH_PX / (2.0 * SHIP_FULL_BODY_FRACTION)   # body radius at which the sprite covers the fraction
+	var sprite_a := smoothstep(full_px * SHIP_FADE_FROM, full_px, body_px)
+	if SpriteLibrary.entry(SHIP_SPRITE).is_empty():
+		sprite_a = 0.0
+	ship_request = {"pos": p, "angle": ship_angle, "sun": Vector2(to_sun.x, -to_sun.y).rotated(-ship_angle),
+			"burning": GameState.burning_at(time_jd), "alpha": sprite_a, "light": _ship_light(orbited)}
+	if sprite_a < 1.0:
+		draw_colored_polygon(PackedVector2Array([p + Vector2(0, -7), p + Vector2(6, 5), p + Vector2(-6, 5)]), Color(1, 1, 1, 1.0 - sprite_a))
 	draw_string(ThemeDB.fallback_font, p + Vector2(10, 22), GameState.ship_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color.WHITE)
 
 
@@ -1306,3 +1409,81 @@ func _apply_sprites() -> void:
 	for node_key: String in sprite_nodes:
 		if not sprite_requests.has(node_key):
 			(sprite_nodes[node_key] as Sprite2D).visible = false
+
+
+## Shows the ship sprite (hull lit by the Sun, glow layer, engine flame while a burn is going on).
+func _apply_ship() -> void:
+	if ship_layer == null:
+		ship_layer = Node2D.new()
+		add_child(ship_layer)
+	var info := SpriteLibrary.entry(SHIP_SPRITE)
+	if info.is_empty() or ship_request.is_empty() or float(ship_request["alpha"]) <= 0.0:
+		ship_layer.visible = false
+		return
+	if ship_node == null:
+		var pivot: Vector2 = info["pivot"]
+		ship_node = Sprite2D.new()
+		ship_node.centered = false
+		ship_node.texture = info["texture"]
+		ship_node.offset = -pivot
+		ship_node.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+		ship_node.scale = Vector2.ONE * SHIP_LENGTH_PX / (info["texture"] as Texture2D).get_size().x
+		var material := SpriteLibrary.lit_material(info["normal"] as Texture2D)
+		if material != null:
+			material.set_shader_parameter("sun_elevation", 0.56)
+			ship_node.material = material
+		ship_layer.add_child(ship_node)
+		if info["glow"] != null:
+			var glow := Sprite2D.new()
+			glow.centered = false
+			glow.texture = info["glow"]
+			glow.offset = -pivot
+			glow.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+			var add := CanvasItemMaterial.new()
+			add.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+			glow.material = add
+			ship_node.add_child(glow)
+		var flame_info := SpriteLibrary.entry("effects/flame_vacuum")
+		if not flame_info.is_empty():
+			ship_flame = Sprite2D.new()
+			ship_flame.centered = false
+			ship_flame.texture = flame_info["texture"]
+			ship_flame.offset = -(flame_info["pivot"] as Vector2)
+			ship_flame.position = Vector2(-pivot.x + 12.0, 0.0)   # at the tail of the hull (the flame points left)
+			ship_flame.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+			ship_node.add_child(ship_flame)
+	ship_layer.visible = true
+	ship_node.position = ship_request["pos"]
+	ship_node.rotation = float(ship_request["angle"])
+	ship_node.modulate = Color(1, 1, 1, float(ship_request["alpha"]))
+	var light := float(ship_request["light"])
+	var lit: ShaderMaterial = ship_node.material as ShaderMaterial
+	if lit != null:
+		lit.set_shader_parameter("sun_dir", ship_request["sun"])
+		lit.set_shader_parameter("sun_strength", 1.15 * light)   # the glow layer stays as bright as it is
+		lit.set_shader_parameter("ambient", 0.05 * light)
+	else:
+		ship_node.self_modulate = Color(light, light, light, 1.0)
+	if ship_flame != null:
+		ship_flame.visible = bool(ship_request["burning"])
+		ship_flame.scale = Vector2(1.0 + 0.12 * sin(Time.get_ticks_msec() * 0.03), 1.0)
+
+
+## How brightly the Sun lights the ship: 1 in daylight, SHIP_SHADOW_LIGHT in the shadow of the body it orbits
+## (a cylinder shadow with a soft edge).
+func _ship_light(orbited: String) -> float:
+	if orbited == "sun":
+		return 1.0
+	var radius := float(bodies[orbited]["radius_km"])
+	var rel := GameState.ship_rel(orbited, time_jd)
+	var to_sun := GameState.body_rel_to(orbited, "sun", time_jd).normalized()
+	var along := rel.dot(to_sun)
+	if along >= 0.0:
+		return 1.0
+	var off_axis := (rel - to_sun * along).length()
+	# The edge gets softer the farther the ship is from the body (not exact, but more comfortable to look at):
+	# sharp (2% of the radius) close to the surface, up to 62% of the radius three radii above it.
+	var altitude := maxf(rel.length() - radius, 0.0)
+	var softness := radius * (0.02 + 0.6 * clampf(altitude / (3.0 * radius), 0.0, 1.0))
+	var shadow := smoothstep(-softness, softness, radius - off_axis)
+	return lerpf(1.0, SHIP_SHADOW_LIGHT, shadow)

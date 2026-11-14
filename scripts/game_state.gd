@@ -999,6 +999,7 @@ static func set_morph_times(a_plan: Dictionary, transfer_leg: Dictionary) -> voi
 	var captures: Array = a_plan.get("capture_legs", [])
 	for i in captures.size():
 		var capture_leg: Dictionary = captures[i]
+		capture_leg["is_pass"] = aero_used and i < int(aero["n"])
 		if aero_used and i < int(aero["n"]):
 			capture_leg["morph_days"] = float(aero.get("pass_days", 0.0))
 		elif aero_used:
@@ -1025,6 +1026,19 @@ static func _next_morph_start(jd_end: float) -> float:
 		if t0 > time_jd and t0 <= jd_end and (best < 0.0 or t0 < best):
 			best = t0
 	return best
+
+
+## True while the engine burns (a burn, not an aerobraking pass, is changing the orbit): the engine flame is shown.
+static func burning_at(jd: float) -> bool:
+	for i in range(1, legs.size()):
+		var leg: Dictionary = legs[i]
+		var span := float(leg.get("morph_days", 0.0))
+		if span <= 0.0 or bool(leg.get("is_pass", false)):
+			continue
+		var t0 := float(leg["t_start"]) - 0.5 * span
+		if jd >= t0 and jd <= t0 + span:
+			return true
+	return false
 
 
 static func morph_at(jd: float) -> Dictionary:
