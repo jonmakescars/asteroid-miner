@@ -1,6 +1,6 @@
 {
   "format_version": 1,
-  "notes": "Starting conditions of a new game. Placeholder values; the budget is deliberately very large for now. propellant_price_eur_per_kg: price of propellant bought at a shipyard (delivered to orbit). mission_cost_eur: operations cost charged at every launch. shield_cost_eur_per_kg: price of replacing a used heat shield at a shipyard, per kg of shield.",
+  "notes": "Starting conditions of a new game. Placeholder values; the budget is deliberately very large for now. propellant_price_eur_per_kg: price of propellant bought at a shipyard (delivered to orbit). mission_cost_eur: operations cost charged at every launch. shield_cost_eur_per_kg: price of replacing a used heat shield at a shipyard, per kg of shield. heat_effect_min_mw_m2 / heat_effect_max_mw_m2: peak heat flux (MW/m2) of an aerobraking pass at which the heating effect (plasma, hull glow) is just visible / at full strength; in between the strength follows a logarithmic scale. rotation_*: how fast the ship turns (for retrograde burns and aerobraking it turns tail-first): the rate falls on a logarithmic scale from rotation_rate_max_deg_s for ships up to rotation_light_mass_kg to rotation_rate_min_deg_s for ships from rotation_heavy_mass_kg (total mass with fuel).",
   "start_budget_eur": 1000000000000.0,
   "start_facilities": [
     {
@@ -10,5 +10,11 @@
   ],
   "propellant_price_eur_per_kg": 2000.0,
   "mission_cost_eur": 50000000.0,
-  "shield_cost_eur_per_kg": 10000.0
+  "shield_cost_eur_per_kg": 10000.0,
+  "heat_effect_min_mw_m2": 0.1,
+  "heat_effect_max_mw_m2": 20.0,
+  "rotation_rate_max_deg_s": 180.0,
+  "rotation_rate_min_deg_s": 10.0,
+  "rotation_light_mass_kg": 5000.0,
+  "rotation_heavy_mass_kg": 100000.0
 }

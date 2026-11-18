@@ -11,12 +11,13 @@ extends Control
 
 const SKIP_LEAD_DAYS := 120.0 / 86400.0  # "skip to departure" stops two minutes before the burn
 const LATE_LAUNCH_DAYS := 300.0 / 86400.0  # a plan can still be launched this long after its departure time
-const MIN_LAUNCH_DELAY_DAYS := 10.0 / 86400.0  # a plan never starts earlier than this after "now"
+const MIN_LAUNCH_DELAY_DAYS := 20.0 / 86400.0  # the first burn (the start of the ship's turn for it) is never earlier than this after "now"
 const MIN_BODY_RADIUS_PX := 3.0
 const BIG_BODY_PX := 60.0             # a body bigger than this (radius on the screen) does not take taps in the time-control area
 const SHIP_FOCUS := "@ship"            # the name of the ship as the target of a tap or a zoom
-const SHIP_SPRITE := "ships/modular"   # until the ship design chooses the hull
-const SHIP_LENGTH_PX := 36.0           # the ship is a marker: it keeps this length on the screen at every zoom
+const SHIP_PLASMA := "effects/plasma_wide"   # the shock front of aerobraking (pointed, blunt or wide, by hull)
+const SHIP_SPRITE := "ships/lander_parts/lander_body"   # the lander with its legs retracted (until the ship design chooses the hull)
+const SHIP_LENGTH_PX := 22.6           # the ship is a marker: it keeps this length on the screen at every zoom (30% smaller than the extended lander at 36 px)
 const SHIP_FULL_BODY_FRACTION := 0.25  # the sprite is shown in full once it covers at most this part of the body's diameter ...
 const SHIP_FADE_FROM := 0.667          # ... and is replaced by the triangle below this fraction of that size (smooth transition)
 const SHIP_SHADOW_LIGHT := 0.25        # brightness of the ship in the shadow of the body it orbits
@@ -67,6 +68,10 @@ var last_target := ""           # the view that was chosen last (a change of it 
 var anim_target := ""           # while zooming to a view: that view, and where the zoom started
 var anim_t := 0.0
 var anim_free := false
+var anim_keep_scale := false    # the zoom only centres the view on the body (the scale stays)
+var ship_follow := false        # the view follows the ship (set by a zoom or a tap on the ship, never by a drag)
+var follow_body := ""           # the body the ship orbits while the view follows it
+var follow_scale := 0.0         # the scale at which the view started to follow the ship
 var anim_body0 := ""
 var anim_offset0 := Vector2.ZERO
 var anim_scale0 := 1.0
@@ -93,8 +98,13 @@ var scene_rank := 0              # 0 while drawing the camera body's own scene (
 var ship_layer: Node2D          # the ship sprite, drawn over this control's own drawing
 var ship_node: Sprite2D
 var ship_flame: Sprite2D
+var ship_plasma: Sprite2D
+var ship_pivot_x := 0.0
+var ship_length_units := 0.0
 var ship_request: Dictionary = {}
 var ship_angle := 0.0
+var retro_shown := 0.0          # how far round the ship is now (0 nose first, 1 tail first); follows the plan's attitude at the turning rate
+var retro_jd := -1.0
 var sprite_requests: Dictionary = {}  # what _draw wants shown this frame: sprite key -> request
 var bar: TopBar
 var info_label: RichTextLabel
@@ -387,7 +397,7 @@ func _body_at(point: Vector2) -> String:
 			pool.append_array(children[str(parent)])
 	if close:
 		pool.append_array(children[cam_body])
-		if not GameState.ship_lost and not GameState.legs.is_empty() and _ship_parent() == cam_body:
+		if not GameState.ship_lost and not GameState.legs.is_empty() and _ship_orbit_body() == cam_body:
 			var ship_point := _to_screen(GameState.ship_rel(cam_body, time_jd) - cam_offset, _view_centre(), cam_scale)
 			if ship_point.distance_to(point) <= TAP_REACH_PX:
 				return SHIP_FOCUS
@@ -408,7 +418,7 @@ func _focus_body(id: String) -> void:
 	if id == SHIP_FOCUS:
 		# The ship in focus (the view follows it): another double tap zooms out to the body it orbits.
 		if _ship_locked() and absf(log(cam_scale / _ship_focus_scale())) < 0.35:
-			_start_zoom(_ship_parent(), true)
+			_start_zoom(follow_body, true)
 		else:
 			_start_zoom(SHIP_FOCUS, true)
 		return
@@ -438,7 +448,9 @@ func _start_zoom(target: String, keep_free: bool) -> void:
 	anim_body0 = cam_body
 	anim_offset0 = cam_offset
 	anim_scale0 = cam_scale
+	anim_keep_scale = false
 	free_camera = false
+	ship_follow = false
 
 
 ## Moves the camera: follows the chosen view, or zooms to it when the choice changed, or stays where the
@@ -460,7 +472,7 @@ func _update_camera(delta: float) -> void:
 		var from_point := GameState.body_rel_to(cam_body, anim_body0, time_jd) + anim_offset0
 		var to_ship := anim_target == SHIP_FOCUS
 		var to_point := GameState.ship_rel(cam_body, time_jd) if to_ship else GameState.body_rel_to(cam_body, anim_target, time_jd)
-		var scale_end := _ship_focus_scale() if to_ship else _fit_scale(anim_target)
+		var scale_end := anim_scale0 if anim_keep_scale else (_ship_focus_scale() if to_ship else _fit_scale(anim_target))
 		var scale_now := exp(lerpf(log(anim_scale0), log(scale_end), w))
 		var span := 1.0 / anim_scale0 - 1.0 / scale_end
 		var k := w if absf(span) < 1.0e-30 else (1.0 / anim_scale0 - 1.0 / scale_now) / span
@@ -468,8 +480,13 @@ func _update_camera(delta: float) -> void:
 		cam_scale = scale_now
 		if anim_t >= 1.0:
 			if to_ship:
-				cam_body = _ship_parent()
-				cam_offset = GameState.ship_rel(cam_body, time_jd)
+				var orbited := _ship_orbit_body()
+				if orbited != "":
+					cam_body = orbited
+					cam_offset = GameState.ship_rel(cam_body, time_jd)
+					ship_follow = true
+					follow_body = orbited
+					follow_scale = scale_end
 			else:
 				cam_body = anim_target
 				cam_offset = Vector2.ZERO
@@ -483,40 +500,62 @@ func _update_camera(delta: float) -> void:
 	_lock_to_ship()
 
 
-## The body the ship orbits now.
-func _ship_parent() -> String:
-	return str(GameState.legs[GameState.leg_index_at(time_jd)]["parent"])
+## The body the ship is really in orbit around now ("" on a transfer or when the ship is lost).
+func _ship_orbit_body() -> String:
+	if GameState.ship_lost or GameState.legs.is_empty():
+		return ""
+	var leg: Dictionary = GameState.legs[GameState.leg_index_at(time_jd)]
+	return str(leg["parent"]) if str(leg["kind"]) in ["orbit", "aero"] else ""
 
 
-## True when the view is zoomed in beyond the normal view of the body the ship orbits and the centre of that body
-## is farther from the middle of the screen than half the smaller screen dimension: the view then follows the
-## ship instead of the body.
+## True while the view follows the ship instead of the body it orbits.
 func _ship_locked() -> bool:
-	if cam_body == "" or anim_target != "" or GameState.ship_lost or GameState.legs.is_empty():
-		return false
-	var orbited := _ship_parent()
-	if cam_scale < _fit_scale(orbited):
-		return false
-	# Only a view that is about the ship: the ship must be on the screen (not far away, like when the view is
-	# on the Moon and the ship orbits the Earth) ...
+	return ship_follow
+
+
+## Called after a zoom by hand: the view starts to follow the ship when it is zoomed in beyond the normal view of
+## the body the ship orbits (the camera is on that body), the ship is on the screen and the centre of the body is
+## farther from the middle of the screen than half the smaller screen dimension. A drag never starts it.
+func _try_follow() -> void:
+	if ship_follow or cam_body == "" or anim_target != "":
+		return
+	var orbited := _ship_orbit_body()
+	if orbited == "" or orbited != cam_body or cam_scale < _fit_scale(orbited):
+		return
 	var ship_from_centre := GameState.ship_rel(cam_body, time_jd) - cam_offset
 	if ship_from_centre.length() * cam_scale > maxf(size.x, size.y) * 0.6:
-		return false
-	# ... and the centre of its body must be out of the middle of the screen.
+		return
 	var body_from_centre := GameState.body_rel_to(cam_body, orbited, time_jd) - cam_offset
-	return body_from_centre.length() * cam_scale > minf(size.x, size.y) * 0.5
+	if body_from_centre.length() * cam_scale > minf(size.x, size.y) * 0.5:
+		ship_follow = true
+		follow_body = orbited
+		follow_scale = cam_scale
 
 
+const FOLLOW_RELEASE_FACTOR := 1.25   # the view lets go of the ship when it is zoomed out by this much from where it began to follow
+
+## Follows the ship, also on a burn or a transfer far from the body it left, until the view is zoomed out by more than
+## FOLLOW_RELEASE_FACTOR from the scale at which the following began, the player taps out (any zoom to a body), or
+## the ship goes into orbit around another body. Then the view lets go and centres on the body.
 func _lock_to_ship() -> void:
-	if _ship_locked():
-		cam_offset = GameState.ship_rel(cam_body, time_jd)
-		free_camera = true
+	if not ship_follow:
+		return
+	var orbited := _ship_orbit_body()
+	var other_orbit := orbited != "" and orbited != follow_body
+	if other_orbit or GameState.ship_lost or cam_scale < follow_scale / FOLLOW_RELEASE_FACTOR:
+		_start_zoom(orbited if other_orbit else follow_body, true)
+		anim_keep_scale = true
+		return
+	cam_offset = GameState.ship_rel(cam_body, time_jd)
+	free_camera = true
 
 
 ## Pixels per km at which the ship is in focus: the body it orbits is large and the ship is on its orbit well
 ## outside the middle of the screen, so the view follows the ship.
 func _ship_focus_scale() -> float:
-	var orbited := _ship_parent()
+	var orbited := _ship_orbit_body()
+	if orbited == "":
+		return cam_scale
 	var distance := maxf(GameState.ship_rel(orbited, time_jd).length(), 1.0)
 	var wanted := 0.75 * minf(size.x, size.y) / distance
 	return clampf(maxf(wanted, _fit_scale(orbited) * 1.01), 0.0, MAX_PX_PER_KM)
@@ -541,6 +580,7 @@ func _zoom_about(point: Vector2, factor: float, new_point: Vector2) -> void:
 	cam_scale = new_scale
 	free_camera = true
 	_rebase()
+	_try_follow()
 
 
 ## One finger drags the view: the picture moves with the finger.
@@ -657,6 +697,106 @@ func _drop_draft(show_followed_course: bool) -> void:
 		message = "Keeping the current course."
 
 
+## Makes a plan whose first burn starts at least MIN_LAUNCH_DELAY_DAYS after now, counted from the moment the ship
+## starts turning for it (the burn is centred on the departure time: half of its duration before it, and the turn
+## before that). make_plan(start_jd) is the planner to call.
+func _plan_with_delay(make_plan: Callable) -> Dictionary:
+	var turn := GameState.half_turn_days()
+	var delay := MIN_LAUNCH_DELAY_DAYS + turn
+	var result: Dictionary = make_plan.call(time_jd + delay, -1.0, false)
+	for _attempt in 2:
+		if result.has("error"):
+			break
+		var burn := GameState.burn_days(float(result.get("dv_departure", 0.0)))
+		var needed := MIN_LAUNCH_DELAY_DAYS + turn + 0.5 * burn
+		if float(result["t_dep"]) >= time_jd + needed:
+			break
+		delay = needed
+		result = make_plan.call(time_jd + delay, -1.0, false)
+	return _postpone_for_route(make_plan, result)
+
+
+const ROUTE_SHIFT_STEP_DAYS := 1.0    # a launch that leaves the best window is tried this many days earlier or later ...
+const ROUTE_SHIFT_MAX_DAYS := 30.0    # ... up to this far, before the launch is postponed to a later window
+const ROUTE_SHIFT_DV_MARGIN := 1.05   # a shifted launch may cost this much more than the planned one (if the tanks hold it)
+
+
+## If the route would pass through the sphere of influence of a body on the way (not the origin, the target or what
+## they orbit): first the departure moves a few days earlier or later (the nearest time that clears the body), as long
+## as the ship can still get there with the propellant it has. If that does not work, the launch is postponed to a
+## later window until the way is clear. (Slingshots will be done on purpose later.)
+func _postpone_for_route(make_plan: Callable, result: Dictionary) -> Dictionary:
+	if result.has("error") or GameState.ship_in_transit():
+		return result
+	var parked := GameState.parked_leg()
+	var conflict := GameState.route_conflict(result, parked)
+	if conflict.is_empty():
+		return result
+	var body_name := str(GameState.bodies[str(conflict["body"])]["name"])
+	var original_departure := float(result["t_dep"])
+	var turn := GameState.half_turn_days()
+	var limit := maxf(GameState.dv_left_kms(), (float(result["dv_departure"]) + float(result["dv_arrival"])) * ROUTE_SHIFT_DV_MARGIN)
+	var steps := int(ROUTE_SHIFT_MAX_DAYS / ROUTE_SHIFT_STEP_DAYS)
+	# Test line: why the tries failed (remove when the shift is confirmed to work).
+	var tried := 0
+	var no_plan := 0
+	var other_time := 0
+	var too_soon := 0
+	var too_costly := 0
+	var blocked := 0
+	var full_failed := 0
+	var first_error := ""
+	var cheapest := 1.0e9
+	for k in range(1, steps + 1):
+		for direction in [1.0, -1.0]:
+			var t := original_departure + float(direction) * float(k) * ROUTE_SHIFT_STEP_DAYS
+			tried += 1
+			var quick: Dictionary = make_plan.call(t, t, true)
+			if quick.has("error"):
+				no_plan += 1
+				first_error = str(quick["error"]) if first_error == "" else first_error
+				continue
+			if absf(float(quick["t_dep"]) - t) > 1.0e-6:
+				other_time += 1
+				continue
+			if t < time_jd + MIN_LAUNCH_DELAY_DAYS + turn + 0.5 * GameState.burn_days(float(quick["dv_departure"])):
+				too_soon += 1
+				continue   # too soon: the ship needs time to turn and for the burn
+			var cost := float(quick["dv_departure"]) + float(quick["dv_arrival"])
+			cheapest = minf(cheapest, cost)
+			if cost > limit:
+				too_costly += 1
+				continue
+			if not GameState.route_conflict(quick, parked).is_empty():
+				blocked += 1
+				continue
+			var shifted: Dictionary = make_plan.call(t, t, false)
+			if shifted.has("error") or not GameState.route_conflict(shifted, parked).is_empty():
+				full_failed += 1
+				continue
+			shifted["route_note"] = "Optimal launch window not possible. Launch moved %+.1f days until %s is out of the way." % [
+					t - original_departure, body_name]
+			return shifted
+	var step := 1.0
+	for _attempt in 25:
+		var later: Dictionary = make_plan.call(float(result["t_dep"]) + step, -1.0, false)
+		if later.has("error"):
+			break
+		result = later
+		conflict = GameState.route_conflict(result, parked)
+		if conflict.is_empty():
+			break
+		step *= 1.4
+	var shift_report := " [Route shift test: tried %d, no plan %d (%s), other time %d, too soon %d, too costly %d (cheapest %.2f km/s, limit %.2f), still blocked %d, full plan failed %d]" % [
+			tried, no_plan, first_error, other_time, too_soon, too_costly, cheapest, limit, blocked, full_failed]
+	if conflict.is_empty():
+		result["route_note"] = "Launch postponed by %.1f days: the route would pass through the sphere of influence of %s.%s" % [
+				float(result["t_dep"]) - original_departure, body_name, shift_report]
+	else:
+		result["route_note"] = "Warning: the route passes through the sphere of influence of %s." % str(GameState.bodies[str(conflict["body"])]["name"])
+	return result
+
+
 func _on_plan() -> void:
 	if not plan.is_empty() and not plan["committed"]:
 		_cancel_plan()
@@ -695,14 +835,16 @@ func _make_plan(keep_aero_off: bool) -> void:
 		# A course change: the plan the ship is following stays saved until the new one is launched.
 		if GameState.saved_plan.is_empty() and not plan.is_empty() and plan["committed"]:
 			GameState.saved_plan = plan
-		result = CourseChange.make_plan(target_id, time_jd + MIN_LAUNCH_DELAY_DAYS, GameState.target_orbits.get(target_id, {}))
+		result = _plan_with_delay(func(start: float, _fixed: float, _quick: bool) -> Dictionary:
+			return CourseChange.make_plan(target_id, start, GameState.target_orbits.get(target_id, {})))
 	else:
 		var parked := GameState.parked_leg()
 		if parked.is_empty():
 			return
 		legs = [parked]
-		result = MissionPlanner.make_plan(str(parked["parent"]), parked["segment"], target_id,
-				time_jd + MIN_LAUNCH_DELAY_DAYS, GameState.target_orbits.get(target_id, {}))
+		result = _plan_with_delay(func(start: float, fixed: float, quick: bool) -> Dictionary:
+			return MissionPlanner.make_plan(str(parked["parent"]), parked["segment"], target_id,
+					start, GameState.target_orbits.get(target_id, {}), fixed, quick))
 	paused = true
 	if result.has("error"):
 		plan = GameState.saved_plan if not GameState.saved_plan.is_empty() else {}
@@ -710,7 +852,7 @@ func _make_plan(keep_aero_off: bool) -> void:
 		message = str(result["error"])
 	else:
 		plan = result
-		message = ""
+		message = str(result.get("route_note", ""))
 		if aero_was_off and plan["aero"]["available"]:
 			AeroBraking.apply(plan, false, int(plan["aero"]["n"]), float(plan["aero"]["h_km"]))
 		_sync_aero()
@@ -814,7 +956,13 @@ func _on_skip() -> void:
 
 
 func _skip_to_departure() -> void:
-	time_jd = maxf(time_jd, float(plan["t_dep"]) - SKIP_LEAD_DAYS)
+	var target_jd := float(plan["t_dep"]) - SKIP_LEAD_DAYS
+	# Never skip past the start of the ship's turn for the first burn: stop a few seconds before it.
+	for window: Dictionary in GameState.manoeuvre_windows():
+		if float(window["t1"]) > time_jd:
+			target_jd = minf(target_jd, float(window["t0"]) - float(window["lead"]) - 5.0 / 86400.0)
+			break
+	time_jd = maxf(time_jd, target_jd)
 	paused = false
 	warp_index = 0
 
@@ -1028,6 +1176,14 @@ func _fuel_text() -> String:
 			GameState.dv_for_fuel(GameState.ship_fuel_capacity_kg)]
 
 
+## A heat load (MJ/m2) as a share of the full capacity of the heat shield.
+func _heat_share_text(heat: float) -> String:
+	var capacity := AeroBraking.shield_capacity_mj_m2(GameState.ship_shield_cm)
+	if capacity <= 0.0:
+		return "%.0f MJ/m2 (no heat shield)" % heat
+	return "%.0f%% of the shield capacity" % (100.0 * heat / capacity)
+
+
 func _aero_lines() -> PackedStringArray:
 	var lines: PackedStringArray = []
 	var aero: Dictionary = plan.get("aero", {})
@@ -1037,25 +1193,30 @@ func _aero_lines() -> PackedStringArray:
 	elif not aero["enabled"]:
 		lines.append("Aerobraking off: propulsive capture. %s" % aero.get("message", ""))
 	elif aero["outcome"] != "ok":
-		lines.append("Aerobraking: %d passes at %.1f km. Heat %.0f MJ/m2" % [int(aero["n"]), float(aero["h_km"]), float(aero["heat"])])
+		lines.append("Aerobraking: %d passes at %.1f km. Heat %s" % [int(aero["n"]), float(aero["h_km"]), _heat_share_text(float(aero["heat"]))])
 	else:
 		lines.append("Aerobraking: %d passes at %.1f km, %s in total, final burns %.0f m/s" % [
 				int(aero["n"]), float(aero["h_km"]), _span_text(float(aero["days"])), float(aero["final_dv"]) * 1000.0])
-		lines.append("Heat %.0f MJ/m2 | peak %.1f g | peak heating %.1f MW/m2" % [
-				float(aero["heat"]), float(aero["peak_g"]), float(aero["peak_flux"])])
+		lines.append("Heat %s | peak %.1f g | peak heating %.1f MW/m2" % [
+				_heat_share_text(float(aero["heat"])), float(aero["peak_g"]), float(aero["peak_flux"])])
 	if aero.get("enabled", false) and aero.has("shield_after"):
 		# Below the reserve the planner keeps (20%), the line has the colour of the warnings.
 		var low_shield: bool = float(aero["shield_after"]) < 1.0 - AeroBraking.HEAT_MARGIN
 		lines.append((WARNING_MARK if low_shield else "") + "Heat shield capacity: %.0f%% now, %.0f%% after the passes" % [
 				float(aero["shield_before"]) * 100.0, float(aero["shield_after"]) * 100.0])
 		if aero["outcome"] == "ok" and str(plan.get("outcome", "ok")) == "ok":
+			var damage := GameState.aerobraking_damage(float(aero["heat"]), float(aero["peak_g"]))
+			var damage_text := " Expected damage: health %.0f%% -> %.0f%%." % [GameState.ship_health * 100.0,
+					maxf(GameState.ship_health - damage, 0.0) * 100.0]
 			if float(aero["shield_after"]) <= 0.0 or float(aero["heat"]) > float(aero["shield_before"]) * AeroBraking.shield_capacity_mj_m2(GameState.ship_shield_cm):
-				lines.append("Warning: the heat shield will be used up and the ship will be damaged.")
+				lines.append("Warning: the heat shield will be used up and the ship will be damaged." + damage_text)
 			elif float(aero["peak_g"]) > AeroBraking.G_LIMIT:
-				lines.append("Warning: the deceleration is above the limit and the ship will be damaged.")
+				lines.append("Warning: the deceleration is above the limit and the ship will be damaged." + damage_text)
 			elif float(aero["heat"]) > AeroBraking.HEAT_MARGIN * float(aero["shield_before"]) * AeroBraking.shield_capacity_mj_m2(GameState.ship_shield_cm):
 				lines.append("Warning: the heat shield will have only %.0f%% of its capacity left, less than the %.0f%% reserve the planner keeps." % [
 						float(aero["shield_after"]) * 100.0, (1.0 - AeroBraking.HEAT_MARGIN) * 100.0])
+	if aero.get("burn_assist", false) and aero["outcome"] == "ok":
+		lines.append("The passes alone leave the ship too fast to be captured: a burn right after the last pass finishes the capture.")
 	if str(plan.get("outcome", "ok")) != "ok":
 		lines.append("Warning: " + str(plan["outcome_text"]))
 	if str(plan.get("warning", "")) != "":
@@ -1079,9 +1240,17 @@ func _info_text() -> String:
 	var lines: PackedStringArray = []
 	lines.append("%s: %s" % [GameState.ship_name, legs[_leg_index_at(time_jd)]["label"]])
 	lines.append("Fuel: %s" % _fuel_text())
-	lines.append("Heat shield: %.0f of %.0f MJ/m2 used | Health: %.0f%%" % [GameState.shield_used_mj_m2,
-			AeroBraking.shield_capacity_mj_m2(GameState.ship_shield_cm), GameState.ship_health * 100.0])
+	if AeroBraking.shield_capacity_mj_m2(GameState.ship_shield_cm) <= 0.0:
+		lines.append("No heat shield | Health: %.0f%%" % (GameState.ship_health * 100.0))
+	else:
+		lines.append("Heat shield: %.0f%% used, %.0f%% left | Health: %.0f%%" % [GameState.shield_used_share() * 100.0,
+				(1.0 - GameState.shield_used_share()) * 100.0, GameState.ship_health * 100.0])
 	lines.append("Budget: %s EUR" % GameState.thousands(GameState.budget_eur))
+	if GameState.stop_reason != "" and Time.get_ticks_msec() - GameState.stop_ms < 20000:   # (a test line: why the warp dropped)
+		lines.append("Warp stopped: %s" % GameState.stop_reason)
+	if retro_shown > 0.001 and retro_shown < 0.999:   # (a test line: shown while the ship turns)
+		lines.append("Turning: %.0f%% of a half turn | rate %.1f deg/s, a half turn takes %.1f s" % [
+				100.0 * retro_shown, GameState.rotation_rate_deg_s(), GameState.half_turn_days() * 86400.0])
 	if not GameState.cargo.is_empty():
 		var names: PackedStringArray = []
 		for type_id in GameState.cargo:
@@ -1187,7 +1356,10 @@ func _draw_map() -> void:
 	var ship_km := GameState.ship_rel(cam_body, time_jd)
 	var p := _to_screen(ship_km - cam_offset, centre, cam_scale)
 	# The ship points the way it flies (on the screen).
-	var ahead := GameState.ship_rel(cam_body, time_jd + SHIP_VELOCITY_STEP_DAYS) - GameState.ship_rel(cam_body, time_jd - SHIP_VELOCITY_STEP_DAYS)
+	# (measured along the one leg the ship is on, so that the direction does not jump where the leg changes)
+	var leg_now: Dictionary = GameState.legs[GameState.leg_index_at(time_jd)]
+	var ahead := GameState.leg_rel_with_offsets(leg_now, cam_body, time_jd + SHIP_VELOCITY_STEP_DAYS) \
+			- GameState.leg_rel_with_offsets(leg_now, cam_body, time_jd - SHIP_VELOCITY_STEP_DAYS)
 	if ahead.length_squared() > 0.0:
 		ship_angle = Vector2(ahead.x, -ahead.y).angle()
 	var to_sun := GameState.body_rel_to(cam_body, "sun", time_jd) - ship_km if cam_body != "sun" else -ship_km
@@ -1195,13 +1367,24 @@ func _draw_map() -> void:
 	var orbited := str(GameState.legs[GameState.leg_index_at(time_jd)]["parent"])
 	var body_px := float(bodies[orbited]["radius_km"]) * cam_scale
 	var full_px := SHIP_LENGTH_PX / (2.0 * SHIP_FULL_BODY_FRACTION)   # body radius at which the sprite covers the fraction
-	var sprite_a := smoothstep(full_px * SHIP_FADE_FROM, full_px, body_px)
+	# Zooming in: the sprite fades in completely over the first half of the range, and only then the triangle fades
+	# out over the second half (zooming out is the reverse), so the ship is never see-through.
+	var fade_lo := full_px * SHIP_FADE_FROM
+	var fade_mid := 0.5 * (fade_lo + full_px)
+	var sprite_a := smoothstep(fade_lo, fade_mid, body_px)
+	var triangle_a := 1.0 - smoothstep(fade_mid, full_px, body_px)
 	if SpriteLibrary.entry(SHIP_SPRITE).is_empty():
 		sprite_a = 0.0
-	ship_request = {"pos": p, "angle": ship_angle, "sun": Vector2(to_sun.x, -to_sun.y).rotated(-ship_angle),
-			"burning": GameState.burning_at(time_jd), "alpha": sprite_a, "light": _ship_light(orbited)}
-	if sprite_a < 1.0:
-		draw_colored_polygon(PackedVector2Array([p + Vector2(0, -7), p + Vector2(6, 5), p + Vector2(-6, 5)]), Color(1, 1, 1, 1.0 - sprite_a))
+		triangle_a = 1.0
+	var attitude := GameState.attitude_at(time_jd)
+	var retro := _turn_towards(float(attitude["retro"]))
+	var heading := ship_angle + PI * retro   # nose first, turning to tail first for retrograde burns and aerobraking
+	ship_request = {"pos": p, "angle": heading, "sun": Vector2(to_sun.x, -to_sun.y).rotated(-heading),
+			"burn": int(attitude["burn"]), "retro": retro, "heat": GameState.heat_at(time_jd), "alpha": sprite_a, "light": _ship_light(orbited)}
+	if triangle_a > 0.0:
+		var triangle := Color.WHITE.lerp(Color(1.0, 0.5, 0.15), float(ship_request["heat"]))   # glows orange while it heats up
+		triangle.a = triangle_a
+		draw_colored_polygon(PackedVector2Array([p + Vector2(0, -7), p + Vector2(6, 5), p + Vector2(-6, 5)]), triangle)
 	draw_string(ThemeDB.fallback_font, p + Vector2(10, 22), GameState.ship_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color.WHITE)
 
 
@@ -1276,6 +1459,8 @@ func _draw_local_route(frame_id: String, centre: Vector2, px_per_km: float) -> v
 				draw_polyline(_route_points(transfer_leg, frame_id, float(plan["t_dep"]), 1.0, radius_km, centre, px_per_km), route_colour, 1.5, true)
 			if str(transfer_leg.get("to_body", "")) == frame_id:
 				draw_polyline(_route_points(transfer_leg, frame_id, float(plan["t_arr"]), -1.0, radius_km, centre, px_per_km), route_colour, 1.5, true)
+				if (transfer_leg.get("to_hyp", {}) as Dictionary).has("delta_out"):   # a fly-by: the way out round the body
+					draw_polyline(_route_points(transfer_leg, frame_id, float(plan["t_arr"]), 1.0, radius_km, centre, px_per_km, float(plan["t_arr"]) + 60.0), route_colour, 1.5, true)
 	var captures: Array = plan.get("capture_legs", [])
 	for capture_leg in captures:
 		if str(capture_leg["parent"]) != frame_id:
@@ -1289,10 +1474,10 @@ func _draw_local_route(frame_id: String, centre: Vector2, px_per_km: float) -> v
 ## Points of the route near one end of a transfer: sampled at growing time steps from t_origin (forwards for
 ## direction 1, backwards for -1) until the path leaves the view.
 func _route_points(leg: Dictionary, frame_id: String, t_origin: float, direction: float, radius_km: float,
-		centre: Vector2, px_per_km: float) -> PackedVector2Array:
+		centre: Vector2, px_per_km: float, t_last_override := -1.0) -> PackedVector2Array:
 	var points := PackedVector2Array()
 	var t_first := float(plan["t_dep"])
-	var t_last := float(plan["t_arr"])
+	var t_last := float(plan["t_arr"]) if t_last_override < 0.0 else t_last_override
 	points.append(_to_screen(GameState.leg_rel_with_offsets(leg, frame_id, t_origin), centre, px_per_km))
 	var step_seconds := 60.0
 	for _k in 200:
@@ -1411,6 +1596,19 @@ func _apply_sprites() -> void:
 			(sprite_nodes[node_key] as Sprite2D).visible = false
 
 
+## The attitude the ship shows: it moves towards the attitude the plan wants, but never faster than the ship can turn
+## (in game time). So when a plan is aborted, or the attitude changes for any other reason, the ship turns round
+## in the time a turn takes instead of jumping.
+func _turn_towards(wanted: float) -> float:
+	var elapsed_s := (time_jd - retro_jd) * 86400.0
+	if retro_jd < 0.0 or elapsed_s < 0.0:
+		retro_shown = wanted   # first frame, or time went backwards
+	else:
+		retro_shown = move_toward(retro_shown, wanted, GameState.rotation_rate_deg_s() / 180.0 * elapsed_s)
+	retro_jd = time_jd
+	return retro_shown
+
+
 ## Shows the ship sprite (hull lit by the Sun, glow layer, engine flame while a burn is going on).
 func _apply_ship() -> void:
 	if ship_layer == null:
@@ -1422,6 +1620,8 @@ func _apply_ship() -> void:
 		return
 	if ship_node == null:
 		var pivot: Vector2 = info["pivot"]
+		ship_pivot_x = pivot.x
+		ship_length_units = (info["texture"] as Texture2D).get_size().x
 		ship_node = Sprite2D.new()
 		ship_node.centered = false
 		ship_node.texture = info["texture"]
@@ -1452,6 +1652,18 @@ func _apply_ship() -> void:
 			ship_flame.position = Vector2(-pivot.x + 12.0, 0.0)   # at the tail of the hull (the flame points left)
 			ship_flame.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 			ship_node.add_child(ship_flame)
+		var plasma_info := SpriteLibrary.entry(SHIP_PLASMA)
+		if not plasma_info.is_empty():
+			ship_plasma = Sprite2D.new()
+			ship_plasma.centered = false
+			ship_plasma.texture = plasma_info["texture"]
+			ship_plasma.offset = -(plasma_info["pivot"] as Vector2)
+			ship_plasma.position = Vector2((info["texture"] as Texture2D).get_size().x - pivot.x - 24.0, 0.0)   # the tip of the shock at the nose
+			ship_plasma.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
+			var plasma_add := CanvasItemMaterial.new()
+			plasma_add.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+			ship_plasma.material = plasma_add
+			ship_node.add_child(ship_plasma)
 	ship_layer.visible = true
 	ship_node.position = ship_request["pos"]
 	ship_node.rotation = float(ship_request["angle"])
@@ -1462,10 +1674,23 @@ func _apply_ship() -> void:
 		lit.set_shader_parameter("sun_dir", ship_request["sun"])
 		lit.set_shader_parameter("sun_strength", 1.15 * light)   # the glow layer stays as bright as it is
 		lit.set_shader_parameter("ambient", 0.05 * light)
+		lit.set_shader_parameter("heat", float(ship_request["heat"]))
+		lit.set_shader_parameter("heat_dir", Vector2.RIGHT.rotated(-PI * float(ship_request["retro"])))   # the way the flow comes, in the hull's own space
 	else:
 		ship_node.self_modulate = Color(light, light, light, 1.0)
+	if ship_plasma != null:
+		var heat := float(ship_request["heat"])
+		var tail_first := float(ship_request["retro"]) > 0.5
+		ship_plasma.rotation = PI if tail_first else 0.0   # the shock is in front: at the tail (the heat shield) when flying tail first
+		ship_plasma.position = Vector2(-ship_pivot_x + 24.0, 0.0) if tail_first else Vector2(ship_length_units - ship_pivot_x - 24.0, 0.0)
+		ship_plasma.visible = heat > 0.01
+		ship_plasma.modulate = Color(1, 1, 1, heat)
+		ship_plasma.scale = Vector2.ONE * (1.0 + 0.5 * heat) * Vector2(1.0 + 0.05 * sin(Time.get_ticks_msec() * 0.04), 1.0)
 	if ship_flame != null:
-		ship_flame.visible = bool(ship_request["burning"])
+		var burn := int(ship_request["burn"])
+		var retro_now := float(ship_request["retro"])
+		# The flame only burns once the ship has turned the right way round (prograde: nose first, retrograde: tail first).
+		ship_flame.visible = (burn > 0 and retro_now < 0.05) or (burn < 0 and retro_now > 0.95)
 		ship_flame.scale = Vector2(1.0 + 0.12 * sin(Time.get_ticks_msec() * 0.03), 1.0)
 
 

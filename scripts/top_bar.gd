@@ -15,8 +15,9 @@ const SCREENS := [
 	["Menu", "res://menu.tscn"],
 ]
 
-const MAX_HEIGHT_PORTRAIT := 0.7    # share of the screen height the bar may use before it scrolls
-const MAX_HEIGHT_LANDSCAPE := 0.55
+const MAX_HEIGHT_PORTRAIT := 0.34   # share of the screen height the bar may use before it scrolls (the top third)
+const MAX_HEIGHT_LANDSCAPE := 0.34
+const WHEEL_STEP_PX := 48
 
 var scroll: ScrollContainer
 var box: VBoxContainer
@@ -38,6 +39,7 @@ func setup(current_scene: String, view_text: String) -> void:
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	add_child(scroll)
 	scroll.get_v_scroll_bar().custom_minimum_size.x = 16
+	scroll.gui_input.connect(_on_scroll_input)
 	box = VBoxContainer.new()
 	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	scroll.add_child(box)
@@ -68,6 +70,28 @@ func setup(current_scene: String, view_text: String) -> void:
 	orbit_label = Label.new()
 	orbit_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	box.add_child(orbit_label)
+
+
+## Scrolling of the bar by hand: the mouse wheel and a drag with a finger or the left button move the content. The
+## events are taken here, so they never reach the map below (the wheel would zoom it, a drag would move it).
+func _on_scroll_input(event: InputEvent) -> void:
+	var button := event as InputEventMouseButton
+	if button != null:
+		if button.pressed and button.button_index == MOUSE_BUTTON_WHEEL_UP:
+			scroll.scroll_vertical -= WHEEL_STEP_PX
+		elif button.pressed and button.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+			scroll.scroll_vertical += WHEEL_STEP_PX
+		elif button.button_index != MOUSE_BUTTON_LEFT:
+			return
+		scroll.accept_event()
+		return
+	var motion := event as InputEventMouseMotion
+	if motion != null and (motion.button_mask & MOUSE_BUTTON_MASK_LEFT) != 0:
+		scroll.scroll_vertical -= int(motion.relative.y)
+		scroll.accept_event()
+		return
+	if event is InputEventScreenTouch or event is InputEventScreenDrag:
+		scroll.accept_event()   # (the touch is also sent as mouse events, which do the scrolling)
 
 
 ## Adds a row of controls below the time row (before anything a screen adds later).

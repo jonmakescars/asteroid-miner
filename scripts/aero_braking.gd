@@ -181,7 +181,7 @@ static func run_passes(ctx: Dictionary, h_km: float, n: int, dt: float) -> Dicti
 	if status == "ok" and ra >= 1.0e11:
 		status = "escape"
 	return {"status": status, "heat": heat, "peak_g": peak_g, "peak_flux": peak_flux, "ras": ras,
-			"seconds": seconds, "ra": ra}
+			"seconds": seconds, "ra": ra, "energy": energy}
 
 
 ## How far the result is from the goal: positive = the apoapsis is still above the target (braking missing),
@@ -266,6 +266,16 @@ static func final_dv(gm: float, rp: float, ra: float, rp_t: float, ra_t: float) 
 	var raise_apoapsis := absf(_speed_at_periapsis(gm, rp, ra_t) - _speed_at_periapsis(gm, rp, ra))
 	var raise_periapsis_later := absf(_speed_at_apoapsis(gm, rp_t, ra_t) - _speed_at_apoapsis(gm, rp, ra_t))
 	return raise_apoapsis + raise_periapsis_later
+
+
+## Delta-v (km/s) of the burns that capture a ship that leaves the last aerobraking pass still too fast (specific
+## energy energy_after, km2/s2, above zero): at the periapsis right after the pass the apoapsis is set to the target
+## apoapsis, and half an orbit later the periapsis is raised to the target periapsis.
+static func escape_capture_dv(gm: float, rp: float, energy_after: float, rp_t: float, ra_t: float) -> float:
+	var exit_speed := sqrt(maxf(2.0 * (energy_after + gm / rp), 0.0))
+	var set_apoapsis := absf(_speed_at_periapsis(gm, rp, ra_t) - exit_speed)
+	var raise_periapsis_later := absf(_speed_at_apoapsis(gm, rp_t, ra_t) - _speed_at_apoapsis(gm, rp, ra_t))
+	return set_apoapsis + raise_periapsis_later
 
 
 static func _period_days(gm: float, a_km: float) -> float:
@@ -418,9 +428,27 @@ static func apply(plan: Dictionary, enabled: bool, n: int, h_km: float, recenter
 	var ra_t := float(plan["ra_t"])
 	var result := run_passes(ctx, h_km, n, FINAL_DT)
 	var status := str(result["status"])
+	aero["burn_assist"] = false
+	var escape_burn := -1.0
+	var escape_needed := 0.0
+	if status == "escape":
+		# Still too fast after the passes: a burn after the last pass can finish the capture if the tanks hold enough
+		# delta-v. Otherwise the ship flies past (it is not lost: it keeps its orbit around the Sun).
+		escape_needed = escape_capture_dv(gm, radius + h_km, float(result["energy"]), rp_t, ra_t) + axis_turn_dv(plan)
+		var left_before_last := true   # (a ship that is still on a hyperbola after an earlier pass leaves and never comes back for the next one)
+		for earlier in (result["ras"] as Array).slice(0, maxi(n - 1, 0)):
+			if float(earlier) >= 1.0e11:
+				left_before_last = false
+		if left_before_last and escape_needed <= GameState.dv_left_kms() - float(plan["dv_departure"]):
+			status = "ok"
+			escape_burn = escape_needed
+			aero["burn_assist"] = true
+		else:
+			status = "flyby"
 	aero["heat"] = float(result["heat"])
 	aero["peak_g"] = float(result["peak_g"])
 	aero["peak_flux"] = float(result["peak_flux"])
+	aero["pass_days"] = float(result["seconds"]) / float(maxi(n, 1)) / 86400.0   # the time of one pass (also for a fly-by: the glow and the turn use it)
 	aero["outcome"] = status
 	# The shield display never goes beyond what the shield had before the manoeuvre, or below zero.
 	var capacity := maxf(float(ctx["shield_capacity_mj_m2"]), 0.000001)
@@ -428,11 +456,17 @@ static func apply(plan: Dictionary, enabled: bool, n: int, h_km: float, recenter
 	aero["shield_before"] = left / capacity
 	aero["shield_after"] = clampf(left - float(result["heat"]), 0.0, left) / capacity
 	if status != "ok":
-		aero["message"] = "The ship slows down too much: it cannot get out of the atmosphere again, so there is no orbit." \
-				if status == "too_slow" else "The ship is still too fast to be captured: it will fly past. Lower the periapsis or add passes."
+		if status == "flyby":
+			aero["message"] = "The ship is still too fast to be captured, and the propellant is not enough for a burn that captures it (%.0f m/s needed after the passes): it will fly past %s and stay on its orbit around the Sun. Lower the periapsis or add passes." % [
+					escape_needed * 1000.0, plan["target_name"]]
+			plan["capture_legs"] = []   # the ship stays on the transfer orbit
+			plan["t_end"] = float(plan["t_arr"])
+			plan["warning"] = ""
+		else:
+			aero["message"] = "The ship slows down too much: it cannot get out of the atmosphere again, so there is no orbit."
+			_use_propulsive_capture(plan)   # only for the legs; the ship is lost on arrival
 		aero["days"] = 0.0
 		aero["final_dv"] = 0.0
-		_use_propulsive_capture(plan)   # only for the legs; the ship is lost on arrival
 		plan["outcome"] = status
 		plan["outcome_text"] = str(aero["message"])
 		plan["dv_arrival"] = 0.0
@@ -443,7 +477,7 @@ static func apply(plan: Dictionary, enabled: bool, n: int, h_km: float, recenter
 	var ras: Array = result["ras"]
 	var ra := float(result["ra"])
 	var rp := radius + h_km
-	var final_burn := final_dv(gm, rp, ra, rp_t, ra_t) + axis_turn_dv(plan)
+	var final_burn := escape_burn if escape_burn >= 0.0 else final_dv(gm, rp, ra, rp_t, ra_t) + axis_turn_dv(plan)
 	aero["final_dv"] = final_burn
 	aero["ra"] = ra
 	# Orbit legs: one ellipse after each pass (a full period each, the last only to its apoapsis), possibly an

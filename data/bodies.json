@@ -11,8 +11,8 @@
     "default_orbit_altitude_km": "km above the surface; altitude of the circular orbit a ship uses when it arrives (placeholder values)"
   },
   "game_start": {
-    "date": "2035-01-01T00:00:00",
-    "jd": 2464328.5
+    "date": "2047-02-23T00:00:00",
+    "jd": 2468764.5
   },
   "bodies": [
     {

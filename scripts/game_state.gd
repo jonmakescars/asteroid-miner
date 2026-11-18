@@ -30,6 +30,14 @@ static var start_budget_eur := 0.0
 static var propellant_price_eur_per_kg := 0.0
 static var mission_cost_eur := 0.0
 static var shield_cost_eur_per_kg := 0.0
+static var stop_reason := ""   # why the time flow was slowed down last (shown for a while, to find odd stops)
+static var stop_ms := 0
+static var rotation_max_deg_s := 180.0     # turning rate of a light ship ...
+static var rotation_min_deg_s := 10.0      # ... and of a heavy one (log scale between the two masses)
+static var rotation_light_mass_kg := 5000.0
+static var rotation_heavy_mass_kg := 100000.0
+static var heat_effect_min_mw_m2 := 0.1    # peak heat flux where the heating effect just shows ...
+static var heat_effect_max_mw_m2 := 20.0   # ... and where it is at full strength (logarithmic in between)
 static var start_jd := 0.0
 
 # Game clock.
@@ -109,6 +117,12 @@ static func load_data() -> bool:
 			propellant_price_eur_per_kg = float(settings.get("propellant_price_eur_per_kg", 0.0))
 			mission_cost_eur = float(settings.get("mission_cost_eur", 0.0))
 			shield_cost_eur_per_kg = float(settings.get("shield_cost_eur_per_kg", 0.0))
+			rotation_max_deg_s = float(settings.get("rotation_rate_max_deg_s", rotation_max_deg_s))
+			rotation_min_deg_s = float(settings.get("rotation_rate_min_deg_s", rotation_min_deg_s))
+			rotation_light_mass_kg = float(settings.get("rotation_light_mass_kg", rotation_light_mass_kg))
+			rotation_heavy_mass_kg = float(settings.get("rotation_heavy_mass_kg", rotation_heavy_mass_kg))
+			heat_effect_min_mw_m2 = float(settings.get("heat_effect_min_mw_m2", heat_effect_min_mw_m2))
+			heat_effect_max_mw_m2 = float(settings.get("heat_effect_max_mw_m2", heat_effect_max_mw_m2))
 		data_loaded = true
 	if not initialized:
 		reset_mission()
@@ -208,6 +222,58 @@ static func apply_burn(dv_kms: float) -> void:
 	ship_fuel_kg = fuel_for_dv(maxf(dv_left_kms() - dv_kms, 0.0))
 
 
+## The time (jd) when everything of a plan is over: the end of the plan and the end of the last burn or pass of its
+## capture (the burns are centred on the start of their leg, so the plan is not over in the middle of one).
+static func _plan_finish_time(a_plan: Dictionary) -> float:
+	var finish := float(a_plan.get("t_end", a_plan["t_arr"]))
+	for leg: Dictionary in a_plan.get("capture_legs", []):
+		finish = maxf(finish, float(leg["t_start"]) + 0.5 * float(leg.get("morph_days", 0.0)))
+	return finish
+
+
+## The burn windows of a plan: [{"t0", "span", "weight"}] for the departure burn or the propulsive burns of the
+## capture. The delta-v of the arrival is shared among them by their duration.
+static func _burn_windows(a_plan: Dictionary, departure: bool) -> Array:
+	var windows: Array = []
+	if departure:
+		for leg: Dictionary in legs:
+			if leg["kind"] == "transfer" and absf(float(leg["t_start"]) - float(a_plan["t_dep"])) < 1.0e-9:
+				var span := float(leg.get("morph_days", 0.0))
+				windows.append({"t0": float(a_plan["t_dep"]) - 0.5 * span, "span": span, "weight": 1.0})
+				break
+		return windows
+	var total := 0.0
+	for leg: Dictionary in a_plan.get("capture_legs", []):
+		var span := float(leg.get("morph_days", 0.0))
+		if span > 0.0 and not bool(leg.get("is_pass", false)):
+			windows.append({"t0": float(leg["t_start"]) - 0.5 * span, "span": span, "weight": span})
+			total += span
+	for window: Dictionary in windows:
+		window["weight"] = float(window["weight"]) / total
+	return windows
+
+
+## Takes the propellant of the burns out of the tanks while they run, not all at once: the share of each burn that
+## is done by now is used up. finish: the plan is over, so everything that is left is used up. Generic for every
+## plan and every target.
+static func _burn_fuel_gradually(a_plan: Dictionary, finish := false) -> void:
+	for kind in ["dv_departure", "dv_arrival"]:
+		var windows := _burn_windows(a_plan, kind == "dv_departure")
+		var done := 1.0 if finish else 0.0
+		if not finish:
+			if windows.is_empty():
+				done = 1.0 if (kind == "dv_departure" and time_jd >= float(a_plan["t_dep"])) else 0.0
+			else:
+				for window: Dictionary in windows:
+					done += float(window["weight"]) * clampf((time_jd - float(window["t0"])) / maxf(float(window["span"]), 1.0e-9), 0.0, 1.0)
+		var key: String = kind + "_applied"
+		var wanted := float(a_plan[kind]) * clampf(done, 0.0, 1.0)
+		var applied := float(a_plan.get(key, 0.0))
+		if wanted > applied:
+			apply_burn(wanted - applied)
+			a_plan[key] = wanted
+
+
 # ---------------------------------------------------------------- clock
 
 ## Advances the game clock by delta real seconds. On departure and arrival the burns are taken from
@@ -217,23 +283,38 @@ static func advance(delta: float) -> void:
 		var step := delta * float(WARP_STEPS[warp_index])
 		var entry := _next_atmosphere_entry()
 		var decay_entry := _next_decay_entry(time_jd + step)
+		var entry_is_decay := false
 		if decay_entry > 0.0 and (entry < 0.0 or decay_entry < entry):
 			entry = decay_entry
-		if warp_index > AERO_WARP_INDEX:
-			# Stop at the EARLIEST of the events that need a slow warp: the start of an aerobraking pass (never jump
-			# over it), the start of a visible burn / pass morph, and the moment the ship gets inside a smaller view.
+			entry_is_decay = true
+		if warp_index > 0:
+			# Stop at the EARLIEST of the events that need a slow warp. Before a burn or an aerobraking pass (the ship
+			# starts turning one half-turn time before it) the time flow drops to real time, so the turn and the burn
+			# can be watched; the moment the ship gets inside a smaller view only drops it to 1 min/s.
 			var stop := -1.0
+			var stop_to_real := true
+			var reason := ""
 			if entry > 0.0 and time_jd + step >= entry:
 				stop = entry
-			var morph_start := _next_morph_start(time_jd + step)
-			if morph_start > 0.0 and (stop < 0.0 or morph_start < stop):
-				stop = morph_start
-			var entry_time := _next_view_entry(time_jd + step)
-			if entry_time > 0.0 and (stop < 0.0 or entry_time < stop):
-				stop = entry_time
+				reason = "the ship reaches the atmosphere"
+				# The outer limit of the atmosphere of an aerobraking plan only slows the time flow down to 1 min/s;
+				# it drops to real time later, before the turn for the pass (the morph window below).
+				stop_to_real = entry_is_decay
+			var morph_window := _next_morph_window(time_jd + step)
+			if not morph_window.is_empty() and (stop < 0.0 or float(morph_window["t_turn"]) < stop):
+				stop = float(morph_window["t_turn"])
+				reason = "%s: %s" % ["aerobraking pass" if bool(morph_window["is_pass"]) else "burn", str(morph_window["label"])]
+			if warp_index > AERO_WARP_INDEX:
+				var entry_time := _next_view_entry(time_jd + step)
+				if entry_time > 0.0 and (stop < 0.0 or entry_time < stop):
+					stop = entry_time
+					stop_to_real = false
+					reason = "the ship enters a smaller view"
 			if stop > 0.0:
 				time_jd = maxf(time_jd, stop)
-				warp_index = AERO_WARP_INDEX
+				stop_reason = reason
+				stop_ms = Time.get_ticks_msec()
+				warp_index = 0 if stop_to_real else AERO_WARP_INDEX
 				step = delta * float(WARP_STEPS[warp_index])
 		var lost_at := _loss_time()
 		if lost_at > 0.0 and time_jd + step >= lost_at:
@@ -243,26 +324,35 @@ static func advance(delta: float) -> void:
 	_decay_orbit()
 	var running := running_plan()
 	if not running.is_empty() and running["committed"]:
-		if not running["departure_done"] and time_jd >= float(running["t_dep"]):
-			running["departure_done"] = true
-			apply_burn(float(running["dv_departure"]))
+		_burn_fuel_gradually(running)
+		if not running["departure_done"]:
+			# The departure can be aborted until the burn starts (before that no propellant has been used).
+			var dep_windows := _burn_windows(running, true)
+			var burn_start := float(dep_windows[0]["t0"]) if not dep_windows.is_empty() else float(running["t_dep"])
+			if time_jd >= burn_start:
+				running["departure_done"] = true
 		var lost_at_end := _loss_time()
-		var end_time := lost_at_end if lost_at_end > 0.0 else float(running.get("t_end", running["t_arr"]))
+		var end_time := lost_at_end if lost_at_end > 0.0 else _plan_finish_time(running)
 		if time_jd >= end_time:
 			var aero: Dictionary = running.get("aero", {})
-			if str(running.get("outcome", "ok")) != "ok":
+			if str(running.get("outcome", "ok")) == "flyby":
+				# Too fast to be captured, and no burn could capture it: the ship flies past and goes on around the Sun.
+				message = "Fly-by of %s: the ship was too fast to be captured and flies on around the Sun." % running["target_name"]
+				if aero.get("enabled", false):
+					message += " " + _take_aerobraking_effects(aero)
+			elif str(running.get("outcome", "ok")) != "ok":
 				# The planner only warned about this; now it happens. (Placeholder rules: the ship is wrecked.)
 				ship_health = 0.0
 				message = _lost_text(str(running["outcome"]), str(running["target_name"]))
 				_lose_ship(message, str(running["outcome"]) != "crash" and bodies[str(running["target_id"])].get("atmosphere") is Dictionary)
+				warp_index = 0
 			else:
-				apply_burn(float(running["dv_arrival"]))
+				_burn_fuel_gradually(running, true)
 				message = "Arrived at %s." % running["target_name"]
 				if aero.get("enabled", false):
 					message += " " + _take_aerobraking_effects(aero)
 			plan = {}
 			saved_plan = {}
-			warp_index = 0
 	_update_facilities()
 
 
@@ -487,19 +577,35 @@ static func _decay_orbit() -> void:
 		message = "The orbit is decaying: " + text
 
 
-## Adds the heat of the aerobraking passes to the shield and damages the ship if the shield or the g
-## limit was exceeded. Returns a sentence for the message.
-static func _take_aerobraking_effects(aero: Dictionary) -> String:
-	var heat := float(aero["heat"])
+## How much health (0 to 1) a heat load (MJ/m2) and a peak deceleration (g) take from the ship now: the part of the
+## heat the shield cannot take (relative to what is left of it) and the part of the deceleration above the limit.
+## The mission planner uses the same numbers for its prediction.
+static func aerobraking_damage(heat: float, peak_g: float) -> float:
 	var left := shield_left_mj_m2()
 	var excess_heat := 0.0
 	if heat > left:
 		excess_heat = 1.0 if left <= 0.0 else heat / left - 1.0
-	var excess_g := maxf(float(aero["peak_g"]) / AeroBraking.G_LIMIT - 1.0, 0.0)
+	var excess_g := maxf(peak_g / AeroBraking.G_LIMIT - 1.0, 0.0)
+	return excess_heat + excess_g
+
+
+## The heat shield as a share of its full capacity: 0 to 1 (a ship without a shield counts as used up).
+static func shield_used_share() -> float:
+	var capacity := AeroBraking.shield_capacity_mj_m2(ship_shield_cm)
+	return 1.0 if capacity <= 0.0 else clampf(shield_used_mj_m2 / capacity, 0.0, 1.0)
+
+
+## Adds the heat of the aerobraking passes to the shield and damages the ship if the shield or the g
+## limit was exceeded. Returns a sentence for the message.
+static func _take_aerobraking_effects(aero: Dictionary) -> String:
+	var heat := float(aero["heat"])
+	var damage := aerobraking_damage(heat, float(aero["peak_g"]))
+	var capacity := AeroBraking.shield_capacity_mj_m2(ship_shield_cm)
 	shield_used_mj_m2 += heat
-	ship_health = maxf(ship_health - excess_heat - excess_g, 0.0)
-	var text := "Aerobraking used %.0f MJ/m2 of the heat shield." % heat
-	if excess_heat > 0.0 or excess_g > 0.0:
+	ship_health = maxf(ship_health - damage, 0.0)
+	var text := "The ship has no heat shield." if capacity <= 0.0 else "Aerobraking used %.0f%% of the heat shield; %.0f%% of it is left." % [
+			100.0 * heat / capacity, 100.0 * (1.0 - shield_used_share())]
+	if damage > 0.0:
 		text += " The ship was damaged: health is now %.0f%%." % (ship_health * 100.0)
 	return text
 
@@ -862,6 +968,10 @@ static func leg_rel_with_offsets(leg: Dictionary, frame_id: String, jd: float) -
 			total = _blend_hyperbola(from_hyp, base, (jd - float(from_hyp["t0"])) * 86400.0)
 		else:
 			total += _faded(leg["from_offset"], base - (leg["from_ref"] as Vector2))
+	if leg.has("anc_offsets") and (leg["anc_offsets"] as Dictionary).has(frame_id):
+		# Leaving from a moon in a view of the planet (or the Sun): the ship starts at the moon, not at the planet.
+		var anc: Dictionary = leg["anc_offsets"][frame_id]
+		total += _faded(anc["offset"], base - (anc["ref"] as Vector2))
 	if str(leg.get("to_body", "")) == frame_id:
 		if leg.has("to_hyp"):
 			var to_hyp: Dictionary = leg["to_hyp"]
@@ -919,6 +1029,8 @@ static func _blend_hyperbola(h: Dictionary, base: Vector2, seconds: float) -> Ve
 	var weight := clampf(1.0 - (hyperbola.length() - 3.0 * rp) / (outer - 3.0 * rp), 0.0, 1.0)
 	weight = weight * weight * (3.0 - 2.0 * weight)
 	var far: Vector2 = base.rotated(float(h["delta"])) + (h.get("shift", Vector2.ZERO) as Vector2)
+	if seconds > 0.0 and h.has("delta_out"):   # a fly-by: the way out is turned by the swing round the body
+		far = base.rotated(float(h["delta_out"])) + (h["shift_out"] as Vector2)
 	return hyperbola * weight + far * (1.0 - weight)
 
 
@@ -957,7 +1069,45 @@ static func transfer_leg_for_plan(a_plan: Dictionary, parked: Dictionary) -> Dic
 			hyp["t0"] = float(a_plan["t_dep"])
 			hyp["shift"] = _asymptote_shift(hyp, false)
 			leg["from_hyp"] = hyp
+		# The transfer is calculated from the centre of the planet the origin moon orbits. In the views of the
+		# planet (and the bodies above it) the ship has to start at the moon, so the jump from the moon's place
+		# to the planet's centre is added and faded out as the ship moves away.
+		var origin_parent: Variant = bodies[str(a_plan["origin_id"])]["parent"]
+		if origin_parent != null and str(origin_parent) != str(a_plan["frame"]) and str(a_plan["frame"]) != str(a_plan["origin_id"]):
+			var anc_offsets := {}
+			var t_departure := float(a_plan["t_dep"])
+			var parked_point: Vector2 = Kepler.position_at(parked["segment"], t_departure)
+			for ancestor in _ancestors(str(a_plan["origin_id"])).slice(1):
+				var base_ancestor := _leg_rel(leg, str(ancestor), t_departure)
+				anc_offsets[str(ancestor)] = {
+					"offset": body_rel_to(str(ancestor), str(a_plan["origin_id"]), t_departure) + parked_point - base_ancestor,
+					"ref": base_ancestor,
+				}
+			leg["anc_offsets"] = anc_offsets
 	var captures: Array = a_plan.get("capture_legs", [])
+	var fly_aero: Dictionary = a_plan.get("aero", {})
+	if captures.is_empty() and str(a_plan.get("outcome", "ok")) == "flyby" and fly_aero.get("enabled", false) \
+			and str(a_plan["frame"]) != str(a_plan["target_id"]) and float(a_plan.get("arrival_energy", -1.0)) > 0.0:
+		# A fly-by: the ship swings round the target through the upper atmosphere (periapsis at the aerobraking
+		# altitude) and flies on. The local course is a hyperbola around the target; far away it is the transfer's own path.
+		var target_id := str(a_plan["target_id"])
+		var rp_fly := float(bodies[target_id]["radius_km"]) + float(fly_aero.get("h_km", 0.0))
+		var t_pass := float(a_plan["t_arr"])
+		var dt_fly := minf(1.0, 0.25 * float(a_plan["flight_days"]))
+		leg["to_body"] = target_id
+		leg["to_ref"] = _leg_rel(leg, target_id, t_pass)
+		leg["to_offset"] = Vector2.ZERO
+		var hyp_fly := _hyperbola(float(a_plan["gm_target"]), rp_fly, 0.0, sqrt(2.0 * float(a_plan["arrival_energy"])))
+		var in_step := _leg_rel(leg, target_id, t_pass - 0.5 * dt_fly) - _leg_rel(leg, target_id, t_pass - dt_fly)
+		var out_step := _leg_rel(leg, target_id, t_pass + dt_fly) - _leg_rel(leg, target_id, t_pass + 0.5 * dt_fly)
+		var slope_fly := sqrt(float(hyp_fly["e"]) * float(hyp_fly["e"]) - 1.0)
+		hyp_fly["phi"] = in_step.angle() - Vector2(1.0, slope_fly).angle()   # the approach direction is the real one
+		hyp_fly["delta"] = _asymptote_angle(hyp_fly, true) - in_step.angle()
+		hyp_fly["shift"] = _asymptote_shift(hyp_fly, true)
+		hyp_fly["delta_out"] = _asymptote_angle(hyp_fly, false) - out_step.angle()
+		hyp_fly["shift_out"] = _asymptote_shift(hyp_fly, false)
+		hyp_fly["t0"] = t_pass
+		leg["to_hyp"] = hyp_fly
 	if not captures.is_empty() and str(captures[0]["parent"]) == str(a_plan["target_id"]):
 		var base_end := _leg_rel(leg, str(a_plan["target_id"]), float(a_plan["t_arr"]))
 		leg["to_body"] = str(a_plan["target_id"])
@@ -996,10 +1146,16 @@ static func set_morph_times(a_plan: Dictionary, transfer_leg: Dictionary) -> voi
 	transfer_leg["morph_days"] = burn_days(float(a_plan["dv_departure"]))
 	var aero: Dictionary = a_plan.get("aero", {})
 	var aero_used: bool = aero.get("enabled", false) and str(aero.get("outcome", "ok")) == "ok"
+	if str(a_plan.get("outcome", "ok")) == "flyby" and aero.get("enabled", false):
+		# The pass of a fly-by: the heat glow, the plasma and the turn tail first belong to the transfer leg (no capture leg).
+		transfer_leg["flyby_t"] = float(a_plan["t_arr"])
+		transfer_leg["flyby_days"] = maxf(float(aero.get("pass_days", 0.0)), 60.0 / 86400.0)
+		transfer_leg["flyby_heat"] = heat_effect_strength(float(aero.get("peak_flux", 0.0)))
 	var captures: Array = a_plan.get("capture_legs", [])
 	for i in captures.size():
 		var capture_leg: Dictionary = captures[i]
 		capture_leg["is_pass"] = aero_used and i < int(aero["n"])
+		capture_leg["heat_peak"] = heat_effect_strength(float(aero.get("peak_flux", 0.0))) if capture_leg["is_pass"] else 0.0
 		if aero_used and i < int(aero["n"]):
 			capture_leg["morph_days"] = float(aero.get("pass_days", 0.0))
 		elif aero_used:
@@ -1017,28 +1173,185 @@ static func _morph_visible(i: int) -> bool:
 
 
 ## The start of the next morph (before jd_end), or -1.
-static func _next_morph_start(jd_end: float) -> float:
-	var best := -1.0
-	for i in range(1, legs.size()):
-		if not _morph_visible(i):
-			continue
-		var t0 := float(legs[i]["t_start"]) - 0.5 * float(legs[i]["morph_days"])
-		if t0 > time_jd and t0 <= jd_end and (best < 0.0 or t0 < best):
-			best = t0
+static func _next_morph_window(jd_end: float) -> Dictionary:
+	var best := {}
+	for window: Dictionary in manoeuvre_windows():
+		var t_turn := float(window["t0"]) - float(window["lead"])   # where the turn begins
+		if t_turn > time_jd and t_turn <= jd_end and (best.is_empty() or t_turn < float(best["t_turn"])):
+			best = window.duplicate()
+			best["t_turn"] = t_turn
 	return best
 
 
-## True while the engine burns (a burn, not an aerobraking pass, is changing the orbit): the engine flame is shown.
-static func burning_at(jd: float) -> bool:
+## Strength (0 to 1) of the heating effect for a heat flux in MW/m2: logarithmic between the two thresholds.
+static func heat_effect_strength(flux_mw_m2: float) -> float:
+	if flux_mw_m2 <= heat_effect_min_mw_m2:
+		return 0.0
+	return clampf(log(flux_mw_m2 / heat_effect_min_mw_m2) / log(heat_effect_max_mw_m2 / heat_effect_min_mw_m2), 0.0, 1.0)
+
+
+## The heating effect now (0 to 1): during an aerobraking pass it rises and falls over the pass (the morph window
+## of the pass leg), peaking at the strength of the pass's peak heat flux.
+static func heat_at(jd: float) -> float:
 	for i in range(1, legs.size()):
 		var leg: Dictionary = legs[i]
+		if leg.has("flyby_t"):
+			var fly_span := float(leg["flyby_days"])
+			var fly_t0 := float(leg["flyby_t"]) - 0.5 * fly_span
+			if jd >= fly_t0 and jd <= fly_t0 + fly_span:
+				var fly_bell := sin(PI * (jd - fly_t0) / fly_span)
+				return float(leg["flyby_heat"]) * fly_bell * fly_bell
 		var span := float(leg.get("morph_days", 0.0))
-		if span <= 0.0 or bool(leg.get("is_pass", false)):
+		if span <= 0.0 or not bool(leg.get("is_pass", false)):
 			continue
 		var t0 := float(leg["t_start"]) - 0.5 * span
 		if jd >= t0 and jd <= t0 + span:
-			return true
-	return false
+			var bell := sin(PI * (jd - t0) / span)
+			return float(leg.get("heat_peak", 0.0)) * bell * bell
+	return 0.0
+
+
+## How fast the ship turns (degrees per game second): the heavier the ship, the slower (inertia, and the loads
+## of turning a big craft). Logarithmic between a light and a heavy mass.
+static func rotation_rate_deg_s() -> float:
+	var mass := maxf(dry_mass_kg() + maxf(ship_fuel_kg, 0.0), 1.0)
+	var w := clampf(log(mass / rotation_light_mass_kg) / log(rotation_heavy_mass_kg / rotation_light_mass_kg), 0.0, 1.0)
+	return rotation_max_deg_s * pow(rotation_min_deg_s / rotation_max_deg_s, w)
+
+
+## Time (days) the ship needs to turn half a turn.
+static func half_turn_days() -> float:
+	return 180.0 / rotation_rate_deg_s() / 86400.0
+
+
+## Does the burn that starts leg i speed the ship up (prograde)? Found from the velocity just before and after.
+static func _burn_is_prograde(i: int) -> bool:
+	var leg: Dictionary = legs[i]
+	if leg.has("prograde"):
+		return bool(leg["prograde"])
+	var before_leg: Dictionary = legs[i - 1]
+	var t0 := float(leg["t_start"])
+	# The velocity is measured relative to the lower of the two bodies: arriving at a moon, relative to the moon (in
+	# the frame of its planet the ship may overtake or trail the moon and the sign of the capture burn would be wrong).
+	var frame := str(before_leg["parent"])
+	if _ancestors(str(leg["parent"])).has(frame):
+		frame = str(leg["parent"])
+	var dt := 30.0 / 86400.0
+	var before := leg_rel_with_offsets(before_leg, frame, t0) - leg_rel_with_offsets(before_leg, frame, t0 - dt)
+	var after := leg_rel_with_offsets(leg, frame, t0 + dt) - leg_rel_with_offsets(leg, frame, t0)
+	var result := (after - before).dot(before) >= 0.0
+	leg["prograde"] = result
+	return result
+
+
+## The burns and aerobraking passes of the ship in time order, with the attitude each one needs and when the
+## ship has to start turning for it: {t0, t1, tail_first, is_pass, from_retro (the attitude before: 0 nose first,
+## 1 tail first), lead (days the turn takes: 0 if the ship already points the right way)}. The ship keeps the
+## attitude of its last burn or pass until the next one needs another, and then turns by the half turn.
+static func manoeuvre_windows() -> Array:
+	var result: Array = []
+	var turn := half_turn_days()
+	var previous := 0.0
+	for i in range(1, legs.size()):
+		var leg: Dictionary = legs[i]
+		var span := float(leg.get("morph_days", 0.0))
+		if span > 0.0:
+			var is_pass := bool(leg.get("is_pass", false))
+			var tail_first := is_pass or not _burn_is_prograde(i)
+			var wanted := 1.0 if tail_first else 0.0
+			var t0 := float(leg["t_start"]) - 0.5 * span
+			result.append({"t0": t0, "t1": t0 + span, "tail_first": tail_first, "is_pass": is_pass, "label": str(leg["label"]),
+					"from_retro": previous, "lead": turn if wanted != previous else 0.0})
+			previous = wanted
+		if leg.has("flyby_t"):
+			var fly_span := float(leg["flyby_days"])
+			var fly_t0 := float(leg["flyby_t"]) - 0.5 * fly_span
+			result.append({"t0": fly_t0, "t1": fly_t0 + fly_span, "tail_first": true, "is_pass": true, "label": "Fly-by of " + str(leg["label"]).trim_prefix("Transfer orbit to "),
+					"from_retro": previous, "lead": turn if previous != 1.0 else 0.0})
+			previous = 1.0
+	return result
+
+
+## The attitude of the ship at a time: {"retro": 0 to 1, "burn": 0 none / 1 prograde burn / -1 retrograde burn}.
+## retro is how far the ship has turned from flying nose first to flying tail first (the engine and the heat shield
+## are at the tail). Only a function of time, so it is right at every warp.
+static func attitude_at(jd: float) -> Dictionary:
+	var retro := 0.0
+	var burn := 0
+	var windows := manoeuvre_windows()
+	for window: Dictionary in windows:
+		var wanted := 1.0 if bool(window["tail_first"]) else 0.0
+		var from_retro := float(window["from_retro"])
+		var t0 := float(window["t0"])
+		var lead := float(window["lead"])
+		if jd < t0 - lead:
+			retro = from_retro
+			break
+		if jd < t0:
+			retro = lerpf(from_retro, wanted, smoothstep(t0 - lead, t0, jd))
+			break
+		retro = wanted
+		if not bool(window["is_pass"]) and jd <= float(window["t1"]):
+			burn = -1 if wanted > 0.5 else 1
+	return {"retro": retro, "burn": burn}
+
+## Radius (km) of the sphere of influence of a body (Laplace). Bodies where this is smaller than the body itself
+## (tiny moons) have none: 0.
+static func soi_radius_km(id: String) -> float:
+	var parent: Variant = bodies[id]["parent"]
+	if parent == null:
+		return INF
+	var segment: Dictionary = bodies[id]["orbit_segments"][0]
+	var soi := float(segment["semi_major_axis_km"]) * pow(float(bodies[id]["gm_km3_s2"]) / float(bodies[str(parent)]["gm_km3_s2"]), 0.4)
+	return soi if soi > float(bodies[id]["radius_km"]) else 0.0
+
+
+const ROUTE_MAX_SPEED_KMS := 80.0   # no relative speed in the system is higher: bounds how fast the ship can reach a body
+
+
+## The first body (other than the origin, the target and the bodies they orbit) whose sphere of influence the
+## planned route passes through, as {"body", "t"}; {} if the route is clear. For plans from the parking orbit.
+static func route_conflict(a_plan: Dictionary, parked: Dictionary) -> Dictionary:
+	if a_plan.is_empty() or a_plan.get("midflight", false) or parked.is_empty():
+		return {}
+	var saved := legs
+	var transfer_leg := transfer_leg_for_plan(a_plan, parked)
+	legs = [parked, transfer_leg]
+	legs.append_array(a_plan.get("capture_legs", []))
+	var result := _route_conflict_between(a_plan, float(a_plan["t_dep"]), float(a_plan["t_arr"]))
+	legs = saved
+	return result
+
+
+static func _route_conflict_between(a_plan: Dictionary, t0: float, t1: float) -> Dictionary:
+	var skip := {}
+	for key in ["origin_id", "target_id"]:
+		for id in _ancestors(str(a_plan[key])):
+			skip[id] = true
+	var coarse := 0.5
+	for key in bodies.keys():
+		var id := str(key)
+		if skip.has(id) or id == str(a_plan["origin_id"]) or id == str(a_plan["target_id"]):
+			continue
+		var radius := soi_radius_km(id)
+		if radius <= 0.0 or is_inf(radius):
+			continue
+		var reach := radius + ROUTE_MAX_SPEED_KMS * coarse * 86400.0
+		var fine := maxf(0.4 * radius / ROUTE_MAX_SPEED_KMS / 86400.0, coarse / 400.0)
+		var t := t0
+		while t <= t1:
+			var distance := ship_rel(id, t).length()
+			if distance <= radius:
+				return {"body": id, "t": t}
+			if distance <= reach:
+				var u := t
+				var u_end := minf(t + coarse, t1)
+				while u <= u_end:
+					if ship_rel(id, u).length() <= radius:
+						return {"body": id, "t": u}
+					u += fine
+			t += coarse
+	return {}
 
 
 static func morph_at(jd: float) -> Dictionary:

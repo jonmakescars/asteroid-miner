@@ -2,6 +2,7 @@ extends Control
 ## Start menu: opens the prototype screens.
 
 const MOBILE_UI_SCALE := 2.0
+const BUILD_LABEL := "version 0.1 - Step 10 ao"   # shown in the menu; update it with every new build
 const ENTRIES := [
 	["Orbit map", "res://main.tscn"],
 	["Ship design", "res://ship_design.tscn"],
@@ -25,7 +26,7 @@ func _ready() -> void:
 	title.add_theme_font_size_override("font_size", 32)
 	box.add_child(title)
 	var subtitle := Label.new()
-	subtitle.text = "Prototype"
+	subtitle.text = "Prototype, " + BUILD_LABEL
 	subtitle.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	subtitle.add_theme_color_override("font_color", Color(0.6, 0.8, 1.0))
 	box.add_child(subtitle)
