@@ -15,8 +15,8 @@ const SCREENS := [
 	["Menu", "res://menu.tscn"],
 ]
 
-const MAX_HEIGHT_PORTRAIT := 0.34   # share of the screen height the bar may use before it scrolls (the top third)
-const MAX_HEIGHT_LANDSCAPE := 0.34
+const MAX_HEIGHT_PORTRAIT := 0.45   # share of the screen height the bar may use before it scrolls
+const MAX_HEIGHT_LANDSCAPE := 0.45
 const WHEEL_STEP_PX := 48
 
 var scroll: ScrollContainer

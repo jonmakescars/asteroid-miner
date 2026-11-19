@@ -391,3 +391,31 @@ A body whose on-screen radius is over 60 px no longer takes taps in the bottom t
 - Ship / triangle fade (`orbit_view.gd`): zooming in, the sprite fades in completely over the first half of the range (`SHIP_FADE_FROM` to full size) and only then the triangle fades out over the second half; zooming out is the reverse.
 - Route-shift test line is still in (waiting for its result).
 - The menu shows the build next to "Prototype": "Prototype, version 0.1 - Step 10 ao" (`BUILD_LABEL` in `menu_view.gd`). Update it with every new build.
+
+
+## Step 10ap: precision near small bodies, approach direction
+
+- B-014: `Kepler.position_xy` returns a position as two 64-bit floats. `GameState._leg_rel` and `body_rel_to` now add and subtract in 64-bit and convert to Vector2 only at the end (Vector2 is 32-bit: about 32 km steps at the distance of Ceres, which made the route jagged and the ship shake).
+- B-015: the capture orbit stays counter-clockwise (direction of the body's rotation). After building the approach hyperbola, `transfer_leg_for_plan` samples the drawn course over the last 2 days before arrival; if it sweeps clockwise round the target it sets `leg["to_mirror"]` (the capture point's angle) and `leg_rel_with_offsets` mirrors the course about that axis. The capture point itself is on the axis, so nothing jumps. The delta-v cost of a real reversal is left for version 0.2 (target orbit direction slider).
+- Build label: "version 0.1 - Step 10 ap".
+
+Step 10ap, second round: after the first 10ap test (Ceres) the course was smooth but still came in clockwise and the ship reversed during the capture. The Ceres approach had no hyperbola (the plain faded course), so the clockwise check now runs for every capture, and the mirror is applied in both cases (hyperbola and faded course) in `leg_rel_with_offsets`.
+
+
+## Step 10aq: complete package
+
+No code change beyond the build label ("version 0.1 - Step 10 aq"). This zip holds the whole pkg folder (scripts, data, art) as of 10ap second version, so that nothing can be a mixed-up older file.
+
+## Step 10ar: capture at the natural point of arrival
+
+- In a planet-to-planet (or moon-to-moon) transfer the periapsis of the capture orbit used a fixed direction (0 deg), so an approach from above had to be mirrored (10ap/10aq). Now `GameState.natural_capture_axis_deg` gives the periapsis direction from the real arrival: the direction of the ship's velocity relative to the target at arrival, turned back by atan(sqrt(e^2-1)) of the arrival hyperbola (e = 1 + rp * v_inf^2 / gm). The ship passes the target on the side where it sweeps round counter-clockwise (the body's rotation). It is stored in `plan["capture_phase_deg"]` by `MissionPlanner.make_plan` for aimable arrivals.
+- The delta-v does not change: `TransferPlanner.capture_dv` depends only on the arrival energy and the target orbit. The planned course still aims at the body's centre; the side the ship passes on is the display/orbit geometry (hyperbola shift) and costs nothing in this model.
+- The mirror of 10ap stays as a guard (it only acts if a course would still sweep clockwise) and should not trigger any more.
+- The axis offset of the target orbit still counts from the arrival direction.
+- Build label: "version 0.1 - Step 10 ar".
+
+## Step 10as: curved approach for transfers that miss the centre
+
+- The curved approach (hyperbola round the target, `to_hyp`) was only used if the transfer missed the target's centre by less than twice the capture radius. At Earth (about 13,000 km) and at Ceres with an axis offset the transfer misses by more, so the course ran straight to the capture point, through the planet. Now the limit is `APPROACH_MAX_MISS_KM` (1e6 km). The far part of the course keeps its own miss (it is shifted by the same impact parameter as before), and near the body the hyperbola takes over.
+- A line for the Godot output shows the miss distance, the capture radius and whether the curved approach was used ("approach to ...", printed when it changes).
+- Build label: "version 0.1 - Step 10 as".

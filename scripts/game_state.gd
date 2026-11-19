@@ -14,6 +14,10 @@ const DEFAULT_SHIP_VE_MS := 3900.0   # effective exhaust velocity of the default
 const DEFAULT_SHIP_PAYLOAD_KG := 5000.0
 const DEFAULT_SHIP_THRUST_KN := 1000.0
 const VIEW_FILL := 0.9          # share of the half screen width that the widest orbit of a view fills
+static var _last_approach_diag := ""
+
+## Greatest distance (km) by which a transfer may miss the centre of its target for the curved approach to be drawn.
+const APPROACH_MAX_MISS_KM := 1.0e6
 const ROUTE_FADE_LENGTHS := 6.0  # the jump at escape / insertion fades out over this many times its size
 const DEFAULT_SHIELD_CM := 15.0
 const AERO_WARP_INDEX := 1   # time flow drops to this (1 min/s) when the ship reaches the upper atmosphere
@@ -892,17 +896,53 @@ static func body_rel_to(from_id: String, to_id: String, jd: float) -> Vector2:
 		if from_chain.has(id):
 			common = str(id)
 			break
-	var from_pos := Vector2.ZERO
+	# Summed and subtracted as 64-bit floats; Vector2 (32-bit) only for the result (see B-014).
+	var from_pos := [0.0, 0.0]
 	for id in from_chain:
 		if str(id) == common:
 			break
-		from_pos += body_rel(str(id), jd)
-	var to_pos := Vector2.ZERO
+		from_pos = _add_xy(from_pos, _body_rel_xy(str(id), jd), 1.0)
+	var to_pos := [0.0, 0.0]
 	for id in to_chain:
 		if str(id) == common:
 			break
-		to_pos += body_rel(str(id), jd)
-	return to_pos - from_pos
+		to_pos = _add_xy(to_pos, _body_rel_xy(str(id), jd), 1.0)
+	return Vector2(to_pos[0] - from_pos[0], to_pos[1] - from_pos[1])
+
+
+## Position of a body relative to its parent as 64-bit floats [x, y].
+static func _body_rel_xy(id: String, jd: float) -> Array:
+	var segments: Array = bodies[id]["orbit_segments"]
+	if segments.is_empty():
+		return [0.0, 0.0]
+	return Kepler.position_xy(Kepler.segment_at(segments, jd), jd)
+
+
+## a + factor * b for [x, y] pairs of 64-bit floats.
+static func _add_xy(a: Array, b: Array, factor: float) -> Array:
+	return [float(a[0]) + factor * float(b[0]), float(a[1]) + factor * float(b[1])]
+
+
+## The natural direction of the periapsis (degrees, in the frame of the target body's parent) of a capture at
+## the target: the ship comes in along its real path and passes the target on the side where it sweeps round it
+## counter-clockwise, the direction of the body's rotation. The angle between the incoming direction and the
+## periapsis follows from the hyperbola with periapsis radius rp and the energy of the arrival (km2/s2).
+## segment is the transfer orbit (in the frame of the target's parent), t_arr the arrival time.
+static func natural_capture_axis_deg(segment: Dictionary, target_id: String, t_arr: float, rp: float, gm: float, energy: float) -> float:
+	var h := 0.1   # days
+	var before := _transfer_rel_target_xy(segment, target_id, t_arr - h)
+	var after := _transfer_rel_target_xy(segment, target_id, t_arr + h)
+	var incoming := atan2(float(after[1]) - float(before[1]), float(after[0]) - float(before[0]))
+	var e := 1.0 + rp * 2.0 * energy / gm
+	var slope := sqrt(maxf(e * e - 1.0, 0.0))
+	return rad_to_deg(incoming - atan2(slope, 1.0))
+
+
+## Position of the transfer orbit relative to the target body as 64-bit floats [x, y].
+static func _transfer_rel_target_xy(segment: Dictionary, target_id: String, jd: float) -> Array:
+	var ship_xy: Array = Kepler.position_xy(segment, jd)
+	var body_xy: Array = _body_rel_xy(target_id, jd)
+	return [float(ship_xy[0]) - float(body_xy[0]), float(ship_xy[1]) - float(body_xy[1])]
 
 
 ## The body and the bodies it orbits, from the body up to the root.
@@ -934,27 +974,41 @@ static func ship_rel(frame_id: String, jd: float) -> Vector2:
 
 
 static func _leg_rel(leg: Dictionary, frame_id: String, jd: float) -> Vector2:
-	var total: Vector2 = Kepler.position_at(leg["segment"], jd)
+	# All sums and differences are done in 64-bit floats; only the result becomes a Vector2 (B-014: with
+	# 32-bit numbers the position relative to Ceres was rounded to steps of about 32 km).
+	var total: Array = Kepler.position_xy(leg["segment"], jd)
 	var current := str(leg["parent"])
 	# The frame is a body inside the leg's own system (for example a moon of the planet the ship orbits):
 	# subtract the body's position around that planet, which keeps the full precision.
-	var down := Vector2.ZERO
+	var down: Array = [0.0, 0.0]
 	var walker := frame_id
 	while walker != current:
 		var up: Variant = bodies[walker]["parent"]
 		if up == null:
 			break
-		down += body_rel(walker, jd)
+		down = _add_xy(down, _body_rel_xy(walker, jd), 1.0)
 		walker = str(up)
 	if walker == current:
-		return total - down
+		return Vector2(float(total[0]) - float(down[0]), float(total[1]) - float(down[1]))
 	while current != frame_id:
 		var parent_id: Variant = bodies[current]["parent"]
 		if parent_id == null:
-			return body_abs(str(leg["parent"]), jd) + Kepler.position_at(leg["segment"], jd) - body_abs(frame_id, jd)
-		total += body_rel(current, jd)
+			# The frame is not an ancestor: difference of the Sun positions of the leg's body and the frame.
+			var leg_chain: Array = [0.0, 0.0]
+			var walk: Variant = str(leg["parent"])
+			while walk != null:
+				leg_chain = _add_xy(leg_chain, _body_rel_xy(str(walk), jd), 1.0)
+				walk = bodies[str(walk)]["parent"]
+			var frame_chain: Array = [0.0, 0.0]
+			walk = frame_id
+			while walk != null:
+				frame_chain = _add_xy(frame_chain, _body_rel_xy(str(walk), jd), 1.0)
+				walk = bodies[str(walk)]["parent"]
+			return Vector2(float(leg_chain[0]) + float(total[0]) - float(frame_chain[0]),
+					float(leg_chain[1]) + float(total[1]) - float(frame_chain[1]))
+		total = _add_xy(total, _body_rel_xy(current, jd), 1.0)
 		current = str(parent_id)
-	return total
+	return Vector2(float(total[0]), float(total[1]))
 
 
 static func leg_rel_with_offsets(leg: Dictionary, frame_id: String, jd: float) -> Vector2:
@@ -978,6 +1032,9 @@ static func leg_rel_with_offsets(leg: Dictionary, frame_id: String, jd: float) -
 			total = _blend_hyperbola(to_hyp, base, (jd - float(to_hyp["t0"])) * 86400.0)
 		else:
 			total += _faded(leg["to_offset"], base - (leg["to_ref"] as Vector2))
+		if leg.has("to_mirror"):   # B-015: mirrored about the capture axis so that the approach sweeps counter-clockwise
+			var axis := float(leg["to_mirror"])
+			total = (total.rotated(-axis) * Vector2(1.0, -1.0)).rotated(axis)
 	return total
 
 
@@ -1115,8 +1172,11 @@ static func transfer_leg_for_plan(a_plan: Dictionary, parked: Dictionary) -> Dic
 		leg["to_offset"] = Kepler.position_at(captures[0]["segment"], float(captures[0]["t_start"])) - base_end
 		var capture_point: Vector2 = Kepler.position_at(captures[0]["segment"], float(captures[0]["t_start"]))
 		var energy := float(a_plan.get("arrival_energy", -1.0))
+		# (The transfer is calculated to the body, but it may miss the centre by a few thousand km: the curved
+		# approach is used unless it misses by an absurd distance. With the old limit of twice the capture radius
+		# the course went straight through Earth, and through Ceres with an axis offset.)
 		if energy > 0.0 and str(a_plan["frame"]) != str(a_plan["target_id"]) and capture_point.length() > 1.0 \
-				and base_end.length() < 2.0 * capture_point.length():
+				and base_end.length() < APPROACH_MAX_MISS_KM:
 			var hyp_in := _hyperbola(float(a_plan["gm_target"]), capture_point.length(), capture_point.angle(), sqrt(2.0 * energy))
 			var dt_in := minf(1.0, 0.25 * float(a_plan["flight_days"]))
 			var near_step := _leg_rel(leg, str(a_plan["target_id"]), float(a_plan["t_arr"]) - 0.5 * dt_in) - _leg_rel(leg, str(a_plan["target_id"]), float(a_plan["t_arr"]) - dt_in)
@@ -1124,6 +1184,24 @@ static func transfer_leg_for_plan(a_plan: Dictionary, parked: Dictionary) -> Dic
 			hyp_in["t0"] = float(a_plan["t_arr"])
 			hyp_in["shift"] = _asymptote_shift(hyp_in, true)
 			leg["to_hyp"] = hyp_in
+		var diag := "approach to %s: miss %.0f km, capture radius %.0f km, curved approach: %s" % [a_plan["target_id"], base_end.length(), capture_point.length(), str(leg.has("to_hyp"))]
+		if diag != _last_approach_diag:   # for the Godot output: shows why a course is straight or curved
+			_last_approach_diag = diag
+			print(diag)
+		# B-015: the orbit runs counter-clockwise (the body's rotation). If the approach as drawn sweeps
+		# clockwise round the target, mirror it about the axis through the capture point.
+		var sweep := 0.0
+		var previous_point := Vector2.ZERO
+		var have_previous := false
+		for k in 41:
+			var days_before := 2.0 * pow(1.0 / 2880.0, float(k) / 40.0)
+			var point := leg_rel_with_offsets(leg, str(a_plan["target_id"]), float(a_plan["t_arr"]) - days_before)
+			if have_previous and point.length() > 0.0 and previous_point.length() > 0.0:
+				sweep += previous_point.angle_to(point)
+			previous_point = point
+			have_previous = true
+		if sweep < -0.01:
+			leg["to_mirror"] = capture_point.angle()
 	return leg
 
 

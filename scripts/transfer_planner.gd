@@ -149,6 +149,105 @@ static func find_window(gm: float, origin_fn: Callable, target_fn: Callable,
 	return {}
 
 
+## The ship's velocity (km/s) at the start of a transfer, relative to the central body: tangential for the
+## Hohmann-style transfers, the velocity the transfer stores ("v_dep") for the others.
+static func departure_velocity(transfer: Dictionary) -> Vector2:
+	if transfer.has("v_dep"):
+		return transfer["v_dep"]
+	var r1 := float(transfer["r1"])
+	var v_departure := sqrt(float(transfer["gm"]) * (2.0 / r1 - 1.0 / float(transfer["a"])))
+	return (transfer["origin"] as Vector2).normalized().rotated(PI / 2.0) * v_departure
+
+
+## The same at the end of a transfer (at the target).
+static func arrival_velocity(transfer: Dictionary) -> Vector2:
+	if transfer.has("v_arr"):
+		return transfer["v_arr"]
+	var r2 := float(transfer["r2"])
+	var v_arrival := sqrt(float(transfer["gm"]) * (2.0 / r2 - 1.0 / float(transfer["a"])))
+	var arrival_direction := Vector2.from_angle((transfer["origin"] as Vector2).angle() + PI)
+	return arrival_direction.rotated(PI / 2.0) * v_arrival
+
+
+static func _stumpff_c(z: float) -> float:
+	if absf(z) < 1.0e-8:
+		return 0.5
+	if z > 0.0:
+		return (1.0 - cos(sqrt(z))) / z
+	return (cosh(sqrt(-z)) - 1.0) / -z
+
+
+static func _stumpff_s(z: float) -> float:
+	if absf(z) < 1.0e-8:
+		return 1.0 / 6.0
+	if z > 0.0:
+		var root := sqrt(z)
+		return (root - sin(root)) / (root * root * root)
+	var root_n := sqrt(-z)
+	return (sinh(root_n) - root_n) / (root_n * root_n * root_n)
+
+
+## A transfer that leaves the origin at t_dep and reaches the target flight_days later: the conic through the two
+## positions (Lambert's problem, counter-clockwise, no full revolutions). It is not tangential at the departure or at
+## the arrival, so the transfer stores the velocities ("v_dep", "v_arr"). Returns {} if there is no ellipse.
+static func lambert_transfer(gm: float, origin_fn: Callable, target_fn: Callable, t_dep: float, flight_days: float) -> Dictionary:
+	var r1v: Vector2 = origin_fn.call(t_dep)
+	var t_arr := t_dep + flight_days
+	var r2v: Vector2 = target_fn.call(t_arr)
+	var r1 := r1v.length()
+	var r2 := r2v.length()
+	var dtheta := fposmod(r2v.angle() - r1v.angle(), TAU)
+	if absf(dtheta - PI) < 1.0e-4 or dtheta < 1.0e-4:
+		return {}   # (a half turn or no turn: the formulas have no single solution there; the window itself is the Hohmann transfer)
+	var tof := flight_days * SECONDS_PER_DAY
+	var a_term := sin(dtheta) * sqrt(r1 * r2 / (1.0 - cos(dtheta)))
+	var low := -40.0
+	var high := TAU * TAU - 1.0e-6
+	var z := 0.0
+	var y := 0.0
+	for _i in 200:
+		z = 0.5 * (low + high)
+		var c := _stumpff_c(z)
+		var s_value := _stumpff_s(z)
+		y = r1 + r2 + a_term * (z * s_value - 1.0) / sqrt(c)
+		var f_value := -1.0
+		if y > 0.0:
+			f_value = pow(y / c, 1.5) * s_value + a_term * sqrt(y) - sqrt(gm) * tof
+		if f_value < 0.0:
+			low = z
+		else:
+			high = z
+	var c_final := _stumpff_c(z)
+	y = r1 + r2 + a_term * (z * _stumpff_s(z) - 1.0) / sqrt(c_final)
+	if y <= 0.0:
+		return {}
+	var f := 1.0 - y / r1
+	var g := a_term * sqrt(y / gm)
+	var g_dot := 1.0 - y / r2
+	if absf(g) < 1.0e-12:
+		return {}
+	var v1 := (r2v - f * r1v) / g
+	var v2 := (g_dot * r2v - r1v) / g
+	if r1v.cross(v1) <= 0.0:
+		return {}   # (clockwise: against the direction every orbit in the system runs)
+	var speed2 := v1.length_squared()
+	var energy_term := 2.0 / r1 - speed2 / gm
+	if energy_term <= 1.0e-12:
+		return {}   # not an ellipse
+	var a := 1.0 / energy_term
+	var e_vector := ((speed2 - gm / r1) * r1v - r1v.dot(v1) * v1) / gm
+	var e := e_vector.length()
+	var peri := e_vector.angle() if e > 1.0e-9 else r1v.angle()
+	var nu := r1v.angle() - peri
+	var ecc_anomaly := 2.0 * atan2(sqrt(maxf(1.0 - e, 0.0)) * sin(0.5 * nu), sqrt(1.0 + e) * cos(0.5 * nu))
+	var mean_anomaly := ecc_anomaly - e * sin(ecc_anomaly)
+	return {
+		"gm": gm, "t_dep": t_dep, "t_arr": t_arr, "flight_days": flight_days, "r1": r1, "r2": r2, "a": a, "e": e,
+		"peri_longitude": peri, "mean_anomaly_start_deg": rad_to_deg(mean_anomaly), "origin": r1v, "target_pos": r2v,
+		"angle_error": 0.0, "v_dep": v1, "v_arr": v2,
+	}
+
+
 ## Burn from a circular parking orbit straight onto the transfer (both around the same body).
 static func departure_dv_bound(transfer: Dictionary, gm: float) -> float:
 	var r1 := float(transfer["r1"])
@@ -160,10 +259,7 @@ static func departure_dv_bound(transfer: Dictionary, gm: float) -> float:
 ## origin_velocity is the body's own velocity around the central body; body_gm and parking_radius_km
 ## describe the ship's circular parking orbit around the origin body.
 static func departure_dv_escape(transfer: Dictionary, origin_velocity: Vector2, body_gm: float, parking_radius_km: float) -> float:
-	var r1 := float(transfer["r1"])
-	var v_departure := sqrt(float(transfer["gm"]) * (2.0 / r1 - 1.0 / float(transfer["a"])))
-	var direction := (transfer["origin"] as Vector2).normalized().rotated(PI / 2.0)
-	var v_inf := (direction * v_departure - origin_velocity).length()
+	var v_inf := (departure_velocity(transfer) - origin_velocity).length()
 	var v_circular := sqrt(body_gm / parking_radius_km)
 	return sqrt(v_inf * v_inf + 2.0 * v_circular * v_circular) - v_circular
 
@@ -172,10 +268,7 @@ static func departure_dv_escape(transfer: Dictionary, origin_velocity: Vector2, 
 ## transfer: the escape hyperbola's outgoing asymptote is turned by the true anomaly acos(-1/e) from its
 ## periapsis (the orbits run counter-clockwise). Used with departure_dv_escape.
 static func escape_axis_deg(transfer: Dictionary, origin_velocity: Vector2, body_gm: float, periapsis_radius_km: float) -> float:
-	var r1 := float(transfer["r1"])
-	var v_departure := sqrt(float(transfer["gm"]) * (2.0 / r1 - 1.0 / float(transfer["a"])))
-	var direction := (transfer["origin"] as Vector2).normalized().rotated(PI / 2.0)
-	var v_inf_vector := direction * v_departure - origin_velocity
+	var v_inf_vector := departure_velocity(transfer) - origin_velocity
 	var v_inf := v_inf_vector.length()
 	var e := 1.0 + periapsis_radius_km * v_inf * v_inf / body_gm
 	return rad_to_deg(v_inf_vector.angle() - acos(-1.0 / e))
@@ -187,10 +280,7 @@ static func escape_axis_deg(transfer: Dictionary, origin_velocity: Vector2, body
 ## phase of the moon in its orbit is not modelled.
 static func departure_dv_from_moon(transfer: Dictionary, planet_velocity: Vector2, planet_gm: float,
 		moon_orbit_radius_km: float, moon_gm: float, parking_radius_km: float) -> float:
-	var r1 := float(transfer["r1"])
-	var v_departure := sqrt(float(transfer["gm"]) * (2.0 / r1 - 1.0 / float(transfer["a"])))
-	var direction := (transfer["origin"] as Vector2).normalized().rotated(PI / 2.0)
-	var v_inf_planet := (direction * v_departure - planet_velocity).length()
+	var v_inf_planet := (departure_velocity(transfer) - planet_velocity).length()
 	var v_required := sqrt(v_inf_planet * v_inf_planet + 2.0 * planet_gm / moon_orbit_radius_km)
 	var v_moon := sqrt(planet_gm / moon_orbit_radius_km)
 	var v_inf_moon := absf(v_required - v_moon)
@@ -200,10 +290,7 @@ static func departure_dv_from_moon(transfer: Dictionary, planet_velocity: Vector
 
 ## Capture burn into a circular orbit around the target. Returns {"v_inf_kms", "dv_kms"}.
 static func arrival_dv(transfer: Dictionary, target_fn: Callable, target_gm: float, capture_radius_km: float) -> Dictionary:
-	var r2 := float(transfer["r2"])
-	var v_arrival := sqrt(float(transfer["gm"]) * (2.0 / r2 - 1.0 / float(transfer["a"])))
-	var arrival_direction := Vector2.from_angle((transfer["origin"] as Vector2).angle() + PI)
-	var ship_velocity := arrival_direction.rotated(PI / 2.0) * v_arrival
+	var ship_velocity := arrival_velocity(transfer)
 	var target_velocity := velocity_kms(target_fn, float(transfer["t_arr"]))
 	var v_inf := (target_velocity - ship_velocity).length()
 	var v_circular := sqrt(target_gm / capture_radius_km)

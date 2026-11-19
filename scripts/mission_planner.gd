@@ -42,7 +42,7 @@ static func default_target_orbit(target_id: String) -> Dictionary:
 ## into the target orbit {"rp_alt_km", "ra_alt_km", "offset_deg"} (altitudes above the surface; the default
 ## orbit of the body if empty). Returns the plan, or {"error": text} if no plan is possible.
 static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: String, t_start: float,
-		target_orbit: Dictionary = {}) -> Dictionary:
+		target_orbit: Dictionary = {}, fixed_departure := -1.0, quick := false) -> Dictionary:
 	var bodies := GameState.bodies
 	var origin: Dictionary = bodies[origin_id]
 	var target: Dictionary = bodies[target_id]
@@ -130,7 +130,7 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 			var target_period := _period_days(target_id)
 			horizon = 20.0 * maxf(origin_period, target_period)
 			step = minf(origin_period, target_period) / 100.0
-		transfer = TransferPlanner.find_window(frame_gm, origin_fn, target_fn, t_start, horizon, step)
+		transfer = _transfer(frame_gm, origin_fn, target_fn, t_start, horizon, step, fixed_departure)
 		if transfer.is_empty():
 			return {"error": "No launch window found."}
 		var origin_velocity := TransferPlanner.velocity_kms(origin_fn, float(transfer["t_dep"]))
@@ -152,7 +152,7 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 		var planet_id := str(origin_parent)
 		var sun_gm := float(bodies["sun"]["gm_km3_s2"])
 		var planet_fn := func(t: float) -> Vector2: return GameState.body_rel(planet_id, t)
-		transfer = TransferPlanner.find_window(sun_gm, planet_fn, target_fn, t_start, SYNODIC_SEARCH_DAYS, 1.0)
+		transfer = _transfer(sun_gm, planet_fn, target_fn, t_start, SYNODIC_SEARCH_DAYS, 1.0, fixed_departure)
 		if transfer.is_empty():
 			return {"error": "No launch window found."}
 		var t_dep := float(transfer["t_dep"])
@@ -167,6 +167,11 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 		return {"error": "No route to %s from here yet." % target["name"]}
 
 	dv_arrival = TransferPlanner.capture_dv(target_gm, arrival_energy, rp_t, ra_t)
+	if aimable and arrival_energy > 0.0:
+		# The capture point is where the ship really arrives (passing on the side that gives a counter-clockwise
+		# orbit), not a fixed direction; no mirroring of the approach is needed.
+		capture_phase_deg = GameState.natural_capture_axis_deg(TransferPlanner.transfer_segment(transfer, float(transfer["gm"])),
+				target_id, float(transfer["t_arr"]), rp_t, target_gm, arrival_energy)
 	var plan := {
 		"origin_id": origin_id,
 		"target_id": target_id,
@@ -192,8 +197,24 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 		"gm_target": target_gm,
 		"dv_capture": dv_arrival,
 	}
+	if quick:
+		plan["aero"] = {"available": false, "enabled": false, "outcome": "ok", "message": ""}
+		plan["capture_legs"] = []   # (only the departure and the cost matter for a quick check of a different departure time)
+		plan["outcome"] = "ok"
+		return plan
 	AeroBraking.setup_plan(plan)   # adds the aerobraking data and the capture legs
 	return plan
+
+
+## The transfer for a plan: the next launch window after t_start, or, with fixed_departure (a Julian Date), a
+## transfer that leaves at that time and takes as long as the window's own transfer would (so the ship leaves a bit
+## earlier or later than the best time, with a different burn).
+static func _transfer(gm: float, origin_fn: Callable, target_fn: Callable, t_start: float, horizon: float, step: float,
+		fixed_departure: float) -> Dictionary:
+	if fixed_departure < 0.0:
+		return TransferPlanner.find_window(gm, origin_fn, target_fn, t_start, horizon, step)
+	var reference := TransferPlanner.transfer_for_departure(gm, origin_fn, target_fn, fixed_departure)
+	return TransferPlanner.lambert_transfer(gm, origin_fn, target_fn, fixed_departure, float(reference["flight_days"]))
 
 
 ## A change of the ship's orbit around the body it is at (a new periapsis, apoapsis and axis): two burns at the

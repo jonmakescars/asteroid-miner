@@ -46,6 +46,21 @@ static func position_at(segment: Dictionary, jd: float) -> Vector2:
 	return in_plane.rotated(_periapsis_longitude(segment))
 
 
+## The same position as position_at, but as an Array [x, y] of 64-bit floats (a Vector2 holds only 32-bit
+## numbers, which loses tens of km at the distance of the asteroid belt). Add and subtract positions in this
+## form and convert to Vector2 only after the subtraction.
+static func position_xy(segment: Dictionary, jd: float) -> Array:
+	var e := float(segment["eccentricity"])
+	var a := float(segment["semi_major_axis_km"])
+	var ecc_anomaly := solve_eccentric_anomaly(mean_anomaly_at(segment, jd), e)
+	var px := a * (cos(ecc_anomaly) - e)
+	var py := a * sqrt(1.0 - e * e) * sin(ecc_anomaly)
+	var rotation := _periapsis_longitude(segment)
+	var c := cos(rotation)
+	var s := sin(rotation)
+	return [px * c - py * s, px * s + py * c]
+
+
 ## Points (km, relative to the parent) along the whole orbit ellipse, for drawing.
 static func orbit_points(segment: Dictionary, count: int = 128) -> PackedVector2Array:
 	var e := float(segment["eccentricity"])
