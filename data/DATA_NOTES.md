@@ -419,3 +419,26 @@ No code change beyond the build label ("version 0.1 - Step 10 aq"). This zip hol
 - The curved approach (hyperbola round the target, `to_hyp`) was only used if the transfer missed the target's centre by less than twice the capture radius. At Earth (about 13,000 km) and at Ceres with an axis offset the transfer misses by more, so the course ran straight to the capture point, through the planet. Now the limit is `APPROACH_MAX_MISS_KM` (1e6 km). The far part of the course keeps its own miss (it is shifted by the same impact parameter as before), and near the body the hyperbola takes over.
 - A line for the Godot output shows the miss distance, the capture radius and whether the curved approach was used ("approach to ...", printed when it changes).
 - Build label: "version 0.1 - Step 10 as".
+
+## Step 10at: only the local course in the target's view
+
+- B-018: in the view of the target body (`leg_rel_with_offsets`, `to_hyp` case) the course is now the hyperbola alone (`_hyperbola_pos`), no longer blended with the transfer's own course. With an axis offset the hyperbola comes in from another direction than the transfer (which aims at the centre), which showed as a visible transition on entering the target's view. For a fly-by the way out is the other arm of the same hyperbola. The Sun view still shows the transfer itself. The departure side (`from_hyp`) still blends.
+- The axis angle shown for the orbit ("axis 276 deg") is measured from the right-hand direction (0 deg, east), counter-clockwise: arrival point at 186 deg plus offset 90 deg = 276 deg. See B-019.
+- Build label: "version 0.1 - Step 10 at".
+
+## Step 10au: universal orbit axis (B-019)
+
+- The axis of a non-circular target orbit is now measured in the frame of the whole solar system (counter-clockwise from east) and is the same for every body: `AeroBraking._axis_deg` returns `offset_deg` itself, no longer arrival angle + offset. A circular orbit has no axis and continues from the arrival.
+- Option 3 (aim, then turn): the arrival aim point can turn the periapsis towards the target axis by up to `AIM_RANGE_DEG` (20 deg) for free (`_arrival_axis`). What is left (`axis_turn_deg`) is turned with a burn at the crossing point of the two ellipses (`axis_turn_dv`, included in the capture burn). Arrivals that cannot be aimed (moon to its planet, orbit changes, central-body course changes) turn the whole gap.
+- Course changes during a flight (`course_change.gd`) now take the natural capture axis too (it was 0 before).
+- Quick plans (used for the shifted-launch search) include the turn burn, so the cost is the same as in the full plan.
+- Orbit changes: the offset is the absolute axis as well (`_plan_orbit_change`).
+- The plan text has a new line: "Orbit axis: ... (solar system frame), arrival aimed at ...; turning the axis by ... costs ... m/s".
+- `AIM_RANGE_DEG` is a guess; change it in aero_braking.gd if the free range should be bigger or smaller.
+- Build label: "version 0.1 - Step 10 au".
+
+## Step 10av: the orbit after capture ends at the universal axis (B-020)
+
+- Cause of the 10au test failures: `_use_propulsive_capture` (capture without aerobraking) put the target orbit at `_arrival_axis` (the aimed axis, at most 20 deg from the natural direction) instead of `_axis_deg` (the universal axis), so the turn burn was paid but never carried out (Earth to Moon with offset 90 stayed at 260 deg; Earth to Ceres gave 166 deg). The aerobraking path already used `_axis_deg` for its last leg.
+- Now, if a turn is left after aiming (more than 0.5 deg), the propulsive capture has two legs: "Capture orbit" at the arrival axis, and half an orbit later (at the apoapsis, where the turn burn is) the target orbit at the universal axis. Without a turn it is one leg at the universal axis. `t_end` is the time of the turn.
+- Build label: "version 0.1 - Step 10 av".

@@ -1284,6 +1284,15 @@ func _info_text() -> String:
 		lines.append("Launch cost: %s EUR" % GameState.thousands(GameState.mission_cost_eur))
 	lines.append("Burns: departure %.2f + capture %.2f = %.2f km/s" % [
 			float(plan["dv_departure"]), float(plan["dv_arrival"]), _plan_dv_total()])
+	if not plan.get("orbit_change", false) and not OrbitControl.is_circular(float(plan["rp_t"]), float(plan["ra_t"])):
+		var turn_deg := AeroBraking.axis_turn_deg(plan)
+		var axis_line := "Orbit axis: %.0f deg (solar system frame), arrival aimed at %.0f deg" % [
+				fposmod(AeroBraking._axis_deg(plan), 360.0), fposmod(AeroBraking._arrival_axis(plan), 360.0)]
+		if turn_deg > 0.5:
+			axis_line += "; turning the axis by %.0f deg costs %.0f m/s (included in the capture burn)." % [turn_deg, AeroBraking.axis_turn_dv(plan) * 1000.0]
+		else:
+			axis_line += "; no turn needed."
+		lines.append(axis_line)
 	if float(plan.get("dv_circularize", 0.0)) > 0.0:
 		lines.append("The periapsis of the parking orbit points the wrong way for this departure: circularising first (%.0f m/s, included in the departure burn)." % (float(plan["dv_circularize"]) * 1000.0))
 	lines.append_array(_aero_lines())

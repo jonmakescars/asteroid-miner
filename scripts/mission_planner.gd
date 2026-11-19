@@ -198,7 +198,8 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 		"dv_capture": dv_arrival,
 	}
 	if quick:
-		plan["aero"] = {"available": false, "enabled": false, "outcome": "ok", "message": ""}
+		plan["dv_arrival"] = float(plan["dv_arrival"]) + AeroBraking.axis_turn_dv(plan)   # (what aiming cannot turn)
+		plan["aero"] ={"available": false, "enabled": false, "outcome": "ok", "message": ""}
 		plan["capture_legs"] = []   # (only the departure and the cost matter for a quick check of a different departure time)
 		plan["outcome"] = "ok"
 		return plan
@@ -239,8 +240,7 @@ static func _plan_orbit_change(body_id: String, segment: Dictionary, t_start: fl
 	elif not OrbitControl.is_circular(rp_t, ra_t):
 		# From a circular orbit to one with an axis: the new periapsis (and apoapsis) must lie on the target axis, so
 		# the first burn happens where the new periapsis (higher apoapsis) or apoapsis (lower periapsis) will be.
-		# The axis offset counts from the axis the circular orbit has (0 deg in the data).
-		middle_axis = axis + float(orbit["offset_deg"])
+		middle_axis = float(orbit["offset_deg"])   # (the axis is universal, not counted from the old orbit)
 		var burn_angle := middle_axis if raise_apoapsis_first else middle_axis + 180.0
 		var angle_now := rad_to_deg(Kepler.position_at(segment, t_start).angle())
 		t_burn = t_start + fposmod(burn_angle - angle_now, 360.0) / float(segment["mean_motion_deg_per_day"])

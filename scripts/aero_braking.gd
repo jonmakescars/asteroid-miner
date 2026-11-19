@@ -14,6 +14,7 @@ extends RefCounted
 
 const SHIP_DENSITY_KG_M3 := 300.0        # average density, to get a ship's size from its mass
 const DRAG_COEFFICIENT := 1.5
+const AIM_RANGE_DEG := 20.0              # how far the arrival aim point can turn the periapsis for free (a little ahead or behind)
 const SHIELD_KG_PER_M2_CM := 3.0         # shield mass per m2 of area and cm of thickness
 const SHIELD_MJ_PER_M2_CM := 15.0        # heat load a shield can take per cm of thickness
 const G_LIMIT := 10.0                    # peak deceleration limit for cargo-only ships (g)
@@ -362,47 +363,87 @@ static func _set_target_outcome(plan: Dictionary) -> void:
 			plan["warning"] = "The periapsis of the target orbit (%.1f km) is inside the upper atmosphere of %s (below %.0f km): the orbit will decay." % [rp_alt, target["name"], interface_altitude_km(atmosphere)]
 
 
-## The angle of the axis of the target orbit. The offset counts from the arrival direction; a circular orbit
-## has no axis, so it simply continues from the arrival.
+## The angle of the axis of the target orbit. It is universal: measured in the frame of the whole solar system
+## (counter-clockwise from the right-hand direction), the same for every body, so that ships arriving at different
+## times or from different directions can be planned into the same orbit. A circular orbit has no axis, so it
+## simply continues from the arrival.
 static func _axis_deg(plan: Dictionary) -> float:
-	var phase := float(plan["capture_phase_deg"])
 	if OrbitControl.is_circular(float(plan["rp_t"]), float(plan["ra_t"])):
-		return phase
-	return phase + float(plan["offset_deg"])
+		return float(plan["capture_phase_deg"])
+	return float(plan["offset_deg"])
+
+
+## The angle (degrees, -180 to 180) from the natural direction of the periapsis of the arrival to the axis of the
+## target orbit.
+static func _axis_gap_deg(plan: Dictionary) -> float:
+	if OrbitControl.is_circular(float(plan["rp_t"]), float(plan["ra_t"])):
+		return 0.0
+	return wrapf(_axis_deg(plan) - float(plan["capture_phase_deg"]), -180.0, 180.0)
 
 
 ## The direction of the periapsis of the orbit the ship arrives on (and of the aerobraking passes). When the
-## arrival can be aimed (arriving from outside the sphere of influence) it is aimed at the axis of the target
-## orbit, so the apoapsis after the passes is already where the target orbit wants it and nothing has to be
-## turned. A transfer to the central body cannot be aimed: it arrives where it arrives.
+## arrival can be aimed (arriving from outside the sphere of influence) the aim point is shifted a little ahead or
+## behind, which turns the periapsis by up to AIM_RANGE_DEG towards the axis of the target orbit at no cost. A
+## transfer to the central body cannot be aimed: it arrives where it arrives.
 static func _arrival_axis(plan: Dictionary) -> float:
-	return _axis_deg(plan) if bool(plan["aimable"]) else float(plan["capture_phase_deg"])
+	var phase := float(plan["capture_phase_deg"])
+	if not bool(plan["aimable"]):
+		return phase
+	return phase + clampf(_axis_gap_deg(plan), -AIM_RANGE_DEG, AIM_RANGE_DEG)
 
 
-## Delta-v (km/s) for turning the axis of the arrival orbit to the axis of the target orbit: zero if the
-## arrival is aimed or the orbit is circular, otherwise a burn at the crossing point of the two ellipses.
+## What is left of the angle between the arrival orbit and the target orbit after aiming (degrees, 0 to 180).
+static func axis_turn_deg(plan: Dictionary) -> float:
+	return absf(wrapf(_axis_deg(plan) - _arrival_axis(plan), -180.0, 180.0))
+
+
+## Delta-v (km/s) for turning the axis of the arrival orbit to the axis of the target orbit by the angle that
+## aiming could not cover: zero if there is nothing left or the orbit is circular, otherwise a burn at the crossing
+## point of the two ellipses.
 static func axis_turn_dv(plan: Dictionary) -> float:
-	if bool(plan["aimable"]) or OrbitControl.is_circular(float(plan["rp_t"]), float(plan["ra_t"])):
+	if OrbitControl.is_circular(float(plan["rp_t"]), float(plan["ra_t"])):
 		return 0.0
 	var rp := float(plan["rp_t"])
 	var ra := float(plan["ra_t"])
 	var e := (ra - rp) / (ra + rp)
 	var p := 2.0 * rp * ra / (rp + ra)
-	return 2.0 * e * sqrt(float(plan["gm_target"]) / p) * absf(sin(deg_to_rad(float(plan["offset_deg"])) * 0.5))
+	return 2.0 * e * sqrt(float(plan["gm_target"]) / p) * absf(sin(deg_to_rad(axis_turn_deg(plan)) * 0.5))
 
 
 ## Falls back to the propulsive capture burn at the target orbit.
 static func _use_propulsive_capture(plan: Dictionary) -> void:
 	plan["dv_arrival"] = float(plan["dv_capture"]) + axis_turn_dv(plan)
 	plan["t_end"] = float(plan["t_arr"])
-	plan["capture_legs"] = [{
-		"parent": plan["target_id"],
-		"segment": _ellipse(float(plan["gm_target"]), float(plan["rp_t"]), float(plan["ra_t"]),
-				float(plan["t_arr"]), _arrival_axis(plan), 0.0),
-		"t_start": float(plan["t_arr"]),
-		"label": "Orbit around %s" % plan["target_name"],
-		"kind": "orbit",
-	}]
+	var gm_t := float(plan["gm_target"])
+	var rp_t := float(plan["rp_t"])
+	var ra_t := float(plan["ra_t"])
+	if axis_turn_deg(plan) > 0.5:
+		# The ship is captured on the orbit it can reach (axis aimed as far as possible), and at the apoapsis the axis
+		# is turned to the universal axis of the target orbit (the burn is part of dv_arrival). Before 10av the orbit
+		# stayed at the arrival axis and the turn burn was paid for nothing.
+		var t_turn := float(plan["t_arr"]) + _period_days(gm_t, 0.5 * (rp_t + ra_t)) * 0.5
+		plan["capture_legs"] = [{
+			"parent": plan["target_id"],
+			"segment": _ellipse(gm_t, rp_t, ra_t, float(plan["t_arr"]), _arrival_axis(plan), 0.0),
+			"t_start": float(plan["t_arr"]),
+			"label": "Capture orbit around %s" % plan["target_name"],
+			"kind": "aero",
+		}, {
+			"parent": plan["target_id"],
+			"segment": _ellipse(gm_t, rp_t, ra_t, t_turn, _axis_deg(plan), 180.0),
+			"t_start": t_turn,
+			"label": "Orbit around %s" % plan["target_name"],
+			"kind": "orbit",
+		}]
+		plan["t_end"] = t_turn
+	else:
+		plan["capture_legs"] = [{
+			"parent": plan["target_id"],
+			"segment": _ellipse(gm_t, rp_t, ra_t, float(plan["t_arr"]), _axis_deg(plan), 0.0),
+			"t_start": float(plan["t_arr"]),
+			"label": "Orbit around %s" % plan["target_name"],
+			"kind": "orbit",
+		}]
 	_set_target_outcome(plan)
 
 

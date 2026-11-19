@@ -1028,8 +1028,11 @@ static func leg_rel_with_offsets(leg: Dictionary, frame_id: String, jd: float) -
 		total += _faded(anc["offset"], base - (anc["ref"] as Vector2))
 	if str(leg.get("to_body", "")) == frame_id:
 		if leg.has("to_hyp"):
+			# In the view of the target only the local course is shown (the hyperbola round the body, a straight
+			# line far away); it is not blended with the transfer's own course, which aims at the body's centre and
+			# comes in from another direction when the target orbit has an axis offset (B-018).
 			var to_hyp: Dictionary = leg["to_hyp"]
-			total = _blend_hyperbola(to_hyp, base, (jd - float(to_hyp["t0"])) * 86400.0)
+			total = _hyperbola_pos(to_hyp, (jd - float(to_hyp["t0"])) * 86400.0)
 		else:
 			total += _faded(leg["to_offset"], base - (leg["to_ref"] as Vector2))
 		if leg.has("to_mirror"):   # B-015: mirrored about the capture axis so that the approach sweeps counter-clockwise
