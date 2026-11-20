@@ -505,3 +505,32 @@ No code change beyond the build label ("version 0.1 - Step 10 aq"). This zip hol
 - Cause: the local hyperbola in `GameState.transfer_leg_for_plan` had its periapsis at the departure point, so it left across the radius. That equals the direction of flight only at an apsis (or on a circular orbit). On an eccentric orbit the ship's velocity at the departure point can be tens of degrees off that.
 - Now: the hyperbola is built to pass through the departure point with the same radius, the same speed at infinity and the same direction as the orbit's velocity there (angular momentum from the flight-path angle, eccentricity from it, periapsis angle and time of periapsis back-calculated from the true anomaly). Circular orbits, orbits at an apsis (angle < ~3 deg from the radius normal) and clockwise orbits keep the old construction.
 - Build label: "version 0.1 - Step 10 be".
+
+## Step 10bf: the context of the ship (B-032)
+
+- Seen in 10bc/10bd: the time flow dropped to 1 min/s at an altitude inside the highest orbit round Phobos ("the ship enters a smaller view"), and leaving a small moon the view did not go back to the larger body. The drop and the view switch followed the size of the view, not a real boundary.
+- Now every body has a context radius, `GameState.context_radius_km(id)` = `max_orbit_radius_km(id)` (the edge of the sphere of influence, at least two body radii; 100 radii above the surface for bodies without one: small moons, asteroids, comets; infinite for the Sun). The ship has a context, `GameState.ship_context_id` (a ship parameter; one ship for now), worked out by `update_ship_context(jd)` every step: the body with the smallest context radius that contains the ship. It is left at `CONTEXT_HYSTERESIS` (1.05) times the radius, so a ship on the edge does not flip.
+- The warp drop to 1 min/s now happens only when the ship gets into the context of a smaller body than its own (`_next_context_entry`, message "the ship enters the space of a smaller body"), never from the view size or a zoom.
+- The view of a body is only used inside its context (`smallest_view`), and the automatic view goes to the next larger body at once when the ship is beyond the context of the body it shows (`OrbitView._update_auto_frame`). The planner's altitude limit is the same value (`max_orbit_altitude_km`, from 10bd).
+- Not in this build: the minimum zoom from the ship's scale (B-033), which waits for ship sprite scaling.
+- Build label: "version 0.1 - Step 10 bf".
+
+## Step 10bg: the view follows the context (B-032, second part)
+
+- Seen in 10bf (Jon): (1) the warp no longer dropped in orbits, but after planning at Phobos, panning by hand and launching to Mars the camera stayed where it was panned (on Phobos); (2) arriving at Mars the warp dropped at the edge of the sphere of influence but the view changed only much later, at the edge of the Martian moon system's view: two different thresholds.
+- Cause: (1) a pan sets `free_camera`, which only ends when the view target changes; at launch the target (Mars) did not change, so the hand-placed camera stayed. (2) The view switch used the size of the view of the body (`view_radius_km`), the warp drop the context radius.
+- Now: `OrbitView._update_context_zoom` starts a zoom to the view of the moment (and ends the free camera) every time the ship's context changes (`GameState.ship_context_id`), when leaving the highest altitude of a body and when entering a smaller context. `GameState.view_extent_km` of the context body of a ship that is flying through it (transfer leg) includes the ship's distance (+10%), so the view of the body is entered at the same moment as the context, and the view fits the ship until it leaves the context.
+- Build label: "version 0.1 - Step 10 bg".
+
+## Step 10bh: the context ends at the normal view size (B-032, third part)
+
+- Seen in 10bg (Jon): entering the space of Mars the warp dropped and the view changed, but at the extreme edge of the sphere of influence, so the view was much wider than the normal Martian view.
+- Now `GameState.context_radius_km(id, jd)` = the distance the view of the body shows at the edge of the screen (`view_radius_km`, which contains the orbits of its moons and of the ship) but not more than the edge of its sphere of influence (`max_orbit_radius_km`). The warp drop, the change of the view and the leaving of a context all use it. The distance of a ship flying through is no longer added to the view size (10bg).
+- Build label: "version 0.1 - Step 10 bh".
+
+## Step 10bi: small moons with a tiny sphere of influence: Deimos (B-034)
+
+- Seen in 10bh (Jon): after capture into a circular 20 km orbit round Deimos the view stayed in the Martian context.
+- Cause: `soi_radius_km` gives Deimos a sphere of influence of 8.1 km (radius 6.2 km; Phobos: 7.2 km, below its radius 11.1 km so it counted as none). `max_orbit_radius_km` therefore gave Deimos a context limit of 2 radii = 12.4 km and `max_orbit_altitude_km` 6.2 km, so an orbit at 20 km altitude was outside its own context. Phobos was fine only because its sphere of influence is smaller than the body.
+- Now a body whose sphere of influence is smaller than `TINY_SOI_RADII` (5) body radii counts as having none, like Phobos: `max_orbit_radius_km` = 101 radii, `max_orbit_altitude_km` = 100 radii (Deimos: about 620 km). Moon (38 radii), Ceres (164) and the planets are unchanged.
+- Build label: "version 0.1 - Step 10 bi".

@@ -13,6 +13,8 @@ const DEFAULT_SHIP_PROPELLANT_KG := 120000.0
 const DEFAULT_SHIP_VE_MS := 3900.0   # effective exhaust velocity of the default ship
 const DEFAULT_SHIP_PAYLOAD_KG := 5000.0
 const DEFAULT_SHIP_THRUST_KN := 1000.0
+const TINY_SOI_RADII := 5.0         # a sphere of influence smaller than this many body radii counts as none (Phobos, Deimos)
+const CONTEXT_HYSTERESIS := 1.05   # the ship leaves a context at this multiple of its radius (and enters it at 1.0)
 const VIEW_FILL := 0.9          # share of the half screen width that the widest orbit of a view fills
 static var _last_approach_diag := ""
 
@@ -82,6 +84,7 @@ static var ship_health := 1.0
 static var ship_fuel_kg := -1.0                         # current propellant; negative = not set yet
 static var ship_burned := false                         # true once the ship has used any delta-v
 static var ship_dv_source := "default value; design a ship on the ship design screen"
+static var ship_context_id := ""                        # the body whose space the ship is in (see update_ship_context); "" = not worked out yet
 
 # Facilities: id -> state dictionary (type values plus body, name, stock_kg and last_jd).
 static var facilities: Dictionary = {}
@@ -294,7 +297,7 @@ static func advance(delta: float) -> void:
 		if warp_index > 0:
 			# Stop at the EARLIEST of the events that need a slow warp. Before a burn or an aerobraking pass (the ship
 			# starts turning one half-turn time before it) the time flow drops to real time, so the turn and the burn
-			# can be watched; the moment the ship gets inside a smaller view only drops it to 1 min/s.
+			# can be watched; the moment the ship gets inside the space of a smaller body only drops it to 1 min/s.
 			var stop := -1.0
 			var stop_to_real := true
 			var reason := ""
@@ -309,11 +312,11 @@ static func advance(delta: float) -> void:
 				stop = float(morph_window["t_turn"])
 				reason = "%s: %s" % ["aerobraking pass" if bool(morph_window["is_pass"]) else "burn", str(morph_window["label"])]
 			if warp_index > AERO_WARP_INDEX:
-				var entry_time := _next_view_entry(time_jd + step)
+				var entry_time := _next_context_entry(time_jd + step)
 				if entry_time > 0.0 and (stop < 0.0 or entry_time < stop):
 					stop = entry_time
 					stop_to_real = false
-					reason = "the ship enters a smaller view"
+					reason = "the ship enters the space of a smaller body"
 			if stop > 0.0:
 				time_jd = maxf(time_jd, stop)
 				stop_reason = reason
@@ -325,6 +328,7 @@ static func advance(delta: float) -> void:
 			time_jd = maxf(time_jd, lost_at)   # stop exactly where the ship blows up
 		else:
 			time_jd += step
+	update_ship_context(time_jd)
 	_decay_orbit()
 	var running := running_plan()
 	if not running.is_empty() and running["committed"]:
@@ -1598,17 +1602,18 @@ static func max_orbit_radius_km(id: String) -> float:
 	var soi := soi_radius_km(id)
 	if is_inf(soi):
 		return INF
-	if soi <= 0.0:
+	if soi < radius * TINY_SOI_RADII:
 		return radius * 101.0
 	return maxf(soi, radius * 2.0)
 
 
 ## The highest altitude (km above the surface) that an orbit around a body can have: the edge of its sphere of
-## influence. Tiny bodies without a sphere of influence keep a generous limit of 100 body radii.
+## influence. Tiny bodies (a sphere of influence smaller than TINY_SOI_RADII body radii, which is none or hardly
+## more than the body itself, like Phobos and Deimos) keep a generous limit of 100 body radii.
 static func max_orbit_altitude_km(id: String) -> float:
 	var radius := float(bodies[id]["radius_km"])
 	var soi := soi_radius_km(id)
-	if soi <= 0.0 or is_inf(soi):
+	if is_inf(soi) or soi < radius * TINY_SOI_RADII:
 		return radius * 100.0
 	return maxf(soi - radius, radius)
 
@@ -1618,26 +1623,54 @@ static func view_radius_km(frame_id: String, jd: float) -> float:
 	return view_extent_km(frame_id, jd) / VIEW_FILL
 
 
-## The body with the smallest view that contains the ship.
+## The distance from the centre of a body up to which it is the ship's context: the distance its view shows at the
+## edge of a portrait screen (view_radius_km, which contains the orbits of its moons and of the ship), but not
+## beyond the edge of its sphere of influence (max_orbit_radius_km). Every body that can have a local view has one,
+## small moons, asteroids and comets included. Leaving it changes the context to the next larger body; entering a
+## smaller one slows the time flow and changes the view. jd < 0: now.
+static func context_radius_km(id: String, jd := -1.0) -> float:
+	return minf(max_orbit_radius_km(id), view_radius_km(id, time_jd if jd < 0.0 else jd))
+
+
+## Works out the context of the ship (a parameter of the ship, ship_context_id): the body with the smallest
+## context radius that contains the ship. A context is left only when the ship is CONTEXT_HYSTERESIS times
+## further out than its radius, so a ship on the edge does not flip between two contexts. Returns the context.
+static func update_ship_context(jd: float) -> String:
+	var best := "sun"
+	var best_radius := INF
+	for id in bodies.keys():
+		var radius := context_radius_km(str(id), jd)
+		if radius < best_radius and ship_rel(str(id), jd).length() <= radius:
+			best = str(id)
+			best_radius = radius
+	if ship_context_id != "" and bodies.has(ship_context_id) and best != ship_context_id:
+		var current_radius := context_radius_km(ship_context_id, jd)
+		if best_radius > current_radius and ship_rel(ship_context_id, jd).length() <= current_radius * CONTEXT_HYSTERESIS:
+			return ship_context_id   # just outside the edge of the context: keep it
+	ship_context_id = best
+	return best
+
+
+## The body with the smallest view that contains the ship (the view of a body is only used inside its context).
 static func smallest_view(jd: float) -> String:
 	var best := "sun"
 	var best_radius := INF
 	for id in bodies.keys():
 		var radius := view_radius_km(str(id), jd)
-		if radius < best_radius and ship_rel(str(id), jd).length() <= radius:
+		if radius < best_radius and ship_rel(str(id), jd).length() <= minf(radius, context_radius_km(str(id), jd)):
 			best = str(id)
 			best_radius = radius
 	return best
 
 
-## If the ship gets inside a smaller view than the one it is in now before jd_end, when it gets in (else -1).
+## If the ship gets inside the context of a smaller body than the one it is in now before jd_end, when it gets in (else -1).
 ## The whole interval is sampled: at a high warp a step can carry the ship through a small view (Mars) and out
 ## again, so comparing only the two ends would miss it.
-static func _next_view_entry(jd_end: float) -> float:
-	var now_radius := view_radius_km(smallest_view(time_jd), time_jd)
+static func _next_context_entry(jd_end: float) -> float:
+	var now_radius := context_radius_km(update_ship_context(time_jd), time_jd)
 	var candidates: Array = []
 	for id in bodies.keys():
-		if view_radius_km(str(id), time_jd) < now_radius:
+		if context_radius_km(str(id), time_jd) < now_radius:
 			candidates.append(str(id))
 	if candidates.is_empty():
 		return -1.0
@@ -1647,12 +1680,12 @@ static func _next_view_entry(jd_end: float) -> float:
 	for k in range(1, samples + 1):
 		var t := time_jd + span * float(k) / float(samples)
 		for id in candidates:
-			if ship_rel(id, t).length() <= view_radius_km(id, t):
+			if ship_rel(id, t).length() <= context_radius_km(id, t):
 				var low := previous
 				var high := t
 				for _i in 24:
 					var middle := 0.5 * (low + high)
-					if ship_rel(id, middle).length() <= view_radius_km(id, middle):
+					if ship_rel(id, middle).length() <= context_radius_km(id, middle):
 						high = middle
 					else:
 						low = middle

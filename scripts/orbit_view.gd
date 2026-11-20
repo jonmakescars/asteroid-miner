@@ -85,6 +85,7 @@ var mouse_down := false         # the (first) finger or the left button is down
 var dragged := false            # ... and has moved so far that it drags the view
 var press_point := Vector2.ZERO
 var last_tap_point := Vector2.ZERO
+var last_context := ""          # the context of the ship at the last frame (a change of it resets the view, see _update_context_zoom)
 var auto_frame := ""            # the body the "auto" view currently shows (see _update_auto_frame)
 var destination_ids: Array = []  # what the destination picker currently offers
 var picker_origin := ""         # the body the picker was filled for
@@ -1121,6 +1122,9 @@ func _update_auto_frame() -> void:
 	if auto_frame != "" and bodies.has(auto_frame) and best != auto_frame:
 		var current_radius := GameState.view_radius_km(auto_frame, time_jd)
 		var still_inside := GameState.ship_rel(auto_frame, time_jd).length() <= current_radius * VIEW_HYSTERESIS
+		# Outside the context (the highest altitude) of the body the view goes to the next larger body at once.
+		if GameState.ship_rel(auto_frame, time_jd).length() > GameState.context_radius_km(auto_frame) * GameState.CONTEXT_HYSTERESIS:
+			still_inside = false
 		if still_inside and best_radius >= current_radius:
 			return   # keep the view: the ship has just left it, but not far enough to switch out
 	auto_frame = best
@@ -1137,11 +1141,26 @@ func _process(delta: float) -> void:
 		add_child(lost_overlay)
 		lost_overlay.play(str(event["text"]), bool(event["burn"]))
 	_update_auto_frame()
+	_update_context_zoom()
 	_update_camera(delta)
 	if picker_origin != _picker_key():
 		_fill_destinations(_selected_target_id())
 	_update_ui()
 	queue_redraw()
+
+
+## When the ship gets into another context (it leaves the highest altitude of a body, or enters the space of a
+## smaller one) the view goes to the view the ship needs now, also if the camera was moved by hand (B-032).
+func _update_context_zoom() -> void:
+	var context := GameState.ship_context_id
+	if context == last_context:
+		return
+	var first := last_context == ""
+	last_context = context
+	if first or cam_body == "":
+		return
+	last_target = _frame_id()
+	_start_zoom(last_target, false)
 
 
 func _update_ui() -> void:
