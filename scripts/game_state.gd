@@ -1084,7 +1084,7 @@ static func _asymptote_shift(h: Dictionary, incoming: bool) -> Vector2:
 ## impact parameter and swings round it).
 static func _blend_hyperbola(h: Dictionary, base: Vector2, seconds: float) -> Vector2:
 	var hyperbola := _hyperbola_pos(h, seconds)
-	var rp := float(h["rp"])
+	var rp := maxf(float(h["rp"]), float(h.get("scale", 0.0)))   # (the size of the parking orbit, if it is bigger than the periapsis)
 	var outer := clampf(6.0 * float(h["a"]), 12.0 * rp, 1.0e8)
 	var weight := clampf(1.0 - (hyperbola.length() - 3.0 * rp) / (outer - 3.0 * rp), 0.0, 1.0)
 	weight = weight * weight * (3.0 - 2.0 * weight)
@@ -1122,12 +1122,37 @@ static func transfer_leg_for_plan(a_plan: Dictionary, parked: Dictionary) -> Dic
 		var departure_speed := (_leg_rel(leg, str(a_plan["origin_id"]), float(a_plan["t_dep"]) + 3600.0 / 86400.0) - base).length() / 3600.0
 		if str(a_plan["frame"]) != str(a_plan["origin_id"]) and departure_speed > 0.01 and departure_point.length() > 1.0 \
 				and base.length() < 2.0 * departure_point.length():   # the transfer must start at the body itself
-			var hyp := _hyperbola(float(bodies[str(a_plan["origin_id"])]["gm_km3_s2"]), departure_point.length(), departure_point.angle(), departure_speed)
+			var origin_mu := float(bodies[str(a_plan["origin_id"])]["gm_km3_s2"])
+			var hyp := _hyperbola(origin_mu, departure_point.length(), departure_point.angle(), departure_speed)
+			hyp["t0"] = float(a_plan["t_dep"])
+			# The route leaves tangentially: in the direction the ship is flying in its orbit. That is across the radius
+			# only at an apsis; on an eccentric orbit the hyperbola is made to pass through the departure point in the
+			# direction of the orbit's velocity (same radius, speed at infinity and direction; B-030).
+			var h_day := 0.001
+			var orbit_velocity := (Kepler.position_at(parked["segment"], float(a_plan["t_dep"]) + h_day) \
+					- Kepler.position_at(parked["segment"], float(a_plan["t_dep"]) - h_day)) / (2.0 * h_day * 86400.0)
+			var radius_now := departure_point.length()
+			var cos_gamma := departure_point.cross(orbit_velocity) / maxf(radius_now * orbit_velocity.length(), 1.0e-12)
+			if cos_gamma > 0.05 and cos_gamma < 0.98:   # a counter-clockwise orbit that is not across the radius here
+				var v_h2 := departure_speed * departure_speed + 2.0 * origin_mu / radius_now
+				var ang_mom := radius_now * sqrt(v_h2) * cos_gamma
+				var p_semi := ang_mom * ang_mom / origin_mu
+				var e_h := sqrt(1.0 + departure_speed * departure_speed * ang_mom * ang_mom / (origin_mu * origin_mu))
+				var nu := acos(clampf((p_semi / radius_now - 1.0) / e_h, -1.0, 1.0))
+				if orbit_velocity.dot(departure_point) < 0.0:
+					nu = -nu   # still on the way in: the periapsis of the hyperbola is ahead
+				hyp = _hyperbola(origin_mu, p_semi / (1.0 + e_h), departure_point.angle() - nu, departure_speed)
+				var anomaly := acosh(maxf((radius_now / float(hyp["a"]) + 1.0) / float(hyp["e"]), 1.0))
+				var since_periapsis := (float(hyp["e"]) * sinh(anomaly) - anomaly) / float(hyp["n"])
+				hyp["t0"] = float(a_plan["t_dep"]) - signf(nu) * since_periapsis / 86400.0
 			var dt := minf(1.0, 0.25 * float(a_plan["flight_days"]))
 			var far_step := _leg_rel(leg, str(a_plan["origin_id"]), float(a_plan["t_dep"]) + dt) - _leg_rel(leg, str(a_plan["origin_id"]), float(a_plan["t_dep"]) + 0.5 * dt)
 			hyp["delta"] = _asymptote_angle(hyp, false) - far_step.angle()
-			hyp["t0"] = float(a_plan["t_dep"])
 			hyp["shift"] = _asymptote_shift(hyp, false)
+			# The local course has to cover the whole parking orbit before it changes over to the transfer's own course:
+			# the size is the apoapsis of the parking orbit (B-027: with an eccentric orbit the change-over was inside it).
+			var parked_segment: Dictionary = parked["segment"]
+			hyp["scale"] = float(parked_segment["semi_major_axis_km"]) * (1.0 + float(parked_segment["eccentricity"]))
 			leg["from_hyp"] = hyp
 		# The transfer is calculated from the centre of the planet the origin moon orbits. In the views of the
 		# planet (and the bodies above it) the ship has to start at the moon, so the jump from the moon's place
@@ -1239,10 +1264,12 @@ static func set_morph_times(a_plan: Dictionary, transfer_leg: Dictionary) -> voi
 		capture_leg["heat_peak"] = heat_effect_strength(float(aero.get("peak_flux", 0.0))) if capture_leg["is_pass"] else 0.0
 		if aero_used and i < int(aero["n"]):
 			capture_leg["morph_days"] = float(aero.get("pass_days", 0.0))
-		elif aero_used:
-			capture_leg["morph_days"] = burn_days(float(aero.get("final_dv", 0.0)))
 		else:
-			capture_leg["morph_days"] = burn_days(float(a_plan["dv_arrival"]))
+			# The burns after the passes (or the whole capture): the axis turn is its own burn (its own leg), the rest is
+			# what remains of the delta-v.
+			var total := float(aero.get("final_dv", 0.0)) if aero_used else float(a_plan["dv_arrival"])
+			var turn_dv := AeroBraking.axis_turn_dv(a_plan)
+			capture_leg["morph_days"] = burn_days(turn_dv if capture_leg.get("axis_turn", false) else maxf(total - turn_dv, 0.0))
 
 
 ## While a burn or an aerobraking pass changes the orbit, the orbit to show: periapsis, apoapsis and axis move
@@ -1325,6 +1352,24 @@ static func _burn_is_prograde(i: int) -> bool:
 	return result
 
 
+## The direction (angle on the screen, radians) in which the ship has to point for the axis-turning burn that starts
+## leg i: along the change of velocity at the point where the two orbits cross (the thrust points along the nose).
+static func _burn_heading(i: int) -> float:
+	var leg: Dictionary = legs[i]
+	if leg.has("burn_heading"):
+		return float(leg["burn_heading"])
+	var t := float(leg["t_start"])
+	var h := 0.001   # days
+	var old_segment: Dictionary = legs[i - 1]["segment"]
+	var new_segment: Dictionary = leg["segment"]
+	var v_old := Kepler.position_at(old_segment, t + h) - Kepler.position_at(old_segment, t - h)
+	var v_new := Kepler.position_at(new_segment, t + h) - Kepler.position_at(new_segment, t - h)
+	var dv := v_new - v_old
+	var angle := Vector2(dv.x, -dv.y).angle() if dv.length_squared() > 0.0 else 0.0
+	leg["burn_heading"] = angle
+	return angle
+
+
 ## The burns and aerobraking passes of the ship in time order, with the attitude each one needs and when the
 ## ship has to start turning for it: {t0, t1, tail_first, is_pass, from_retro (the attitude before: 0 nose first,
 ## 1 tail first), lead (days the turn takes: 0 if the ship already points the right way)}. The ship keeps the
@@ -1338,6 +1383,13 @@ static func manoeuvre_windows() -> Array:
 		var span := float(leg.get("morph_days", 0.0))
 		if span > 0.0:
 			var is_pass := bool(leg.get("is_pass", false))
+			if bool(leg.get("axis_turn", false)) and str(legs[i - 1]["parent"]) == str(leg["parent"]):
+				# The radial burn that turns the axis: the ship points along the velocity change, fixed in space, for the
+				# whole burn. It turns to that heading before the burn and back to its course after it.
+				var fixed_t0 := float(leg["t_start"]) - 0.5 * span
+				result.append({"t0": fixed_t0, "t1": fixed_t0 + span, "tail_first": previous > 0.5, "is_pass": false, "label": str(leg["label"]),
+						"from_retro": previous, "lead": turn, "fixed": true, "fixed_angle": _burn_heading(i)})
+				continue
 			var tail_first := is_pass or not _burn_is_prograde(i)
 			var wanted := 1.0 if tail_first else 0.0
 			var t0 := float(leg["t_start"]) - 0.5 * span
@@ -1359,6 +1411,8 @@ static func manoeuvre_windows() -> Array:
 static func attitude_at(jd: float) -> Dictionary:
 	var retro := 0.0
 	var burn := 0
+	var fixed := 0.0          # 0 to 1: how far the ship has turned from its course to the fixed heading of an axis-turning burn
+	var fixed_angle := 0.0
 	var windows := manoeuvre_windows()
 	for window: Dictionary in windows:
 		var wanted := 1.0 if bool(window["tail_first"]) else 0.0
@@ -1368,13 +1422,25 @@ static func attitude_at(jd: float) -> Dictionary:
 		if jd < t0 - lead:
 			retro = from_retro
 			break
+		if bool(window.get("fixed", false)):
+			retro = from_retro
+			fixed_angle = float(window["fixed_angle"])
+			# (the turn itself, at the turning rate, is done by the view: this is the heading the ship wants)
+			if jd <= float(window["t1"]):
+				fixed = 1.0
+				if jd >= t0:
+					burn = 2
+				break
+			fixed = 0.0
+			continue
+		fixed = 0.0
 		if jd < t0:
 			retro = lerpf(from_retro, wanted, smoothstep(t0 - lead, t0, jd))
 			break
 		retro = wanted
 		if not bool(window["is_pass"]) and jd <= float(window["t1"]):
 			burn = -1 if wanted > 0.5 else 1
-	return {"retro": retro, "burn": burn}
+	return {"retro": retro, "burn": burn, "fixed": fixed, "fixed_angle": fixed_angle}
 
 ## Radius (km) of the sphere of influence of a body (Laplace). Bodies where this is smaller than the body itself
 ## (tiny moons) have none: 0.
@@ -1435,6 +1501,21 @@ static func _route_conflict_between(a_plan: Dictionary, t0: float, t1: float) ->
 	return {}
 
 
+## The orbit during the radial burn that turns the axis (w from 0 to 1): the ship stays at the point P where the
+## two orbits cross, and its velocity changes from the old one to the new one (only the radial part changes), so
+## every orbit in between is the one through P with that velocity. The orbit turns about P and shrinks and grows
+## again a little on the way (a stretch), instead of morphing from one orbit to the other. {} if it cannot be made.
+static func _axis_turn_orbit(old_segment: Dictionary, new_segment: Dictionary, t_burn: float, w: float) -> Dictionary:
+	var h := 0.001   # days
+	var a := float(new_segment["semi_major_axis_km"])
+	var n_rad_s := deg_to_rad(float(new_segment["mean_motion_deg_per_day"])) / 86400.0
+	var mu := n_rad_s * n_rad_s * a * a * a
+	var p := Kepler.position_at(new_segment, t_burn)
+	var v_old := (Kepler.position_at(old_segment, t_burn + h) - Kepler.position_at(old_segment, t_burn - h)) / (2.0 * h * 86400.0)
+	var v_new := (Kepler.position_at(new_segment, t_burn + h) - Kepler.position_at(new_segment, t_burn - h)) / (2.0 * h * 86400.0)
+	return CourseChange.state_segment(mu, p, v_old.lerp(v_new, clampf(w, 0.0, 1.0)), t_burn)
+
+
 static func morph_at(jd: float) -> Dictionary:
 	for i in range(1, legs.size()):
 		var leg: Dictionary = legs[i]
@@ -1455,6 +1536,10 @@ static func morph_at(jd: float) -> Dictionary:
 			var wide := view_radius_km(str(leg["parent"]), jd) * 1.5
 			old_segment = AeroBraking._ellipse(1.0, rp_new, maxf(wide, rp_new * 2.0), jd, float(new_segment["argument_of_periapsis_deg"]), 0.0)
 		var w := (jd - t0) / span
+		if leg.get("axis_turn", false) and str(before["parent"]) == str(leg["parent"]):
+			var turning := _axis_turn_orbit(old_segment, new_segment, float(leg["t_start"]), w)
+			if not turning.is_empty():
+				return {"parent": str(leg["parent"]), "segment": turning}
 		var rp0 := float(old_segment["semi_major_axis_km"]) * (1.0 - float(old_segment["eccentricity"]))
 		var ra0 := float(old_segment["semi_major_axis_km"]) * (1.0 + float(old_segment["eccentricity"]))
 		var rp1 := float(new_segment["semi_major_axis_km"]) * (1.0 - float(new_segment["eccentricity"]))
@@ -1488,7 +1573,44 @@ static func view_extent_km(frame_id: String, jd: float) -> float:
 	for kid_id in kid_ids:
 		var segment := Kepler.segment_at(bodies[kid_id]["orbit_segments"], jd)
 		extent = maxf(extent, float(segment["semi_major_axis_km"]) * (1.0 + float(segment["eccentricity"])))
+	# A ship that stays in orbit around the body keeps its whole orbit in the view (apoapsis + 10%), so it does not
+	# get zoomed out to the next system when the orbit is wider than the moons, and the time flow does not drop every
+	# time it passes the edge of the view. This goes for the orbit it is on and for the orbits it will be on (the
+	# legs of a launched plan) and for the intended orbit of the plan in the planner. Not if the apoapsis is beyond
+	# the highest orbit the body can have (then it is not staying in orbit).
+	var limit := max_orbit_radius_km(frame_id)
+	for index in range(leg_index_at(jd), legs.size()):
+		var orbit_leg: Dictionary = legs[index]
+		if orbit_leg["parent"] == frame_id and orbit_leg["kind"] != "transfer":
+			var apoapsis := float(orbit_leg["segment"]["semi_major_axis_km"]) * (1.0 + float(orbit_leg["segment"]["eccentricity"]))
+			if apoapsis <= limit:
+				extent = maxf(extent, apoapsis * 1.1)
+	if not plan.is_empty() and str(plan.get("target_id", "")) == frame_id and plan.has("ra_t"):
+		if float(plan["ra_t"]) <= limit:
+			extent = maxf(extent, float(plan["ra_t"]) * 1.1)
 	return extent
+
+
+## The largest distance from the centre of a body that an orbit around it can reach: the edge of its sphere of
+## influence; for tiny bodies without one, 100 body radii above the surface.
+static func max_orbit_radius_km(id: String) -> float:
+	var radius := float(bodies[id]["radius_km"])
+	var soi := soi_radius_km(id)
+	if is_inf(soi):
+		return INF
+	if soi <= 0.0:
+		return radius * 101.0
+	return maxf(soi, radius * 2.0)
+
+
+## The highest altitude (km above the surface) that an orbit around a body can have: the edge of its sphere of
+## influence. Tiny bodies without a sphere of influence keep a generous limit of 100 body radii.
+static func max_orbit_altitude_km(id: String) -> float:
+	var radius := float(bodies[id]["radius_km"])
+	var soi := soi_radius_km(id)
+	if soi <= 0.0 or is_inf(soi):
+		return radius * 100.0
+	return maxf(soi - radius, radius)
 
 
 ## The distance from a body's centre that its view shows at the edge of a portrait screen.

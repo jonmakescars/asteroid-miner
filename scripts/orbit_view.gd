@@ -105,6 +105,8 @@ var ship_request: Dictionary = {}
 var ship_angle := 0.0
 var retro_shown := 0.0          # how far round the ship is now (0 nose first, 1 tail first); follows the plan's attitude at the turning rate
 var retro_jd := -1.0
+var fixed_shown := 0.0         # the same for the turn to the fixed heading of the axis-turning burn (0 along the course, 1 at the burn heading)
+var fixed_jd := -1.0
 var sprite_requests: Dictionary = {}  # what _draw wants shown this frame: sprite key -> request
 var bar: TopBar
 var info_label: RichTextLabel
@@ -671,9 +673,35 @@ func _on_target_changed() -> void:
 	if GameState.ship_in_transit():
 		_drop_draft(false)   # another destination was picked: the draft of the old one is no longer meant
 		return
+	if not plan.is_empty() and not bool(plan["committed"]) and not GameState.parked_leg().is_empty():
+		# The planner is open: it stays open for the new destination. The orbit that was chosen stays, as far as it is
+		# possible around the new body; the limits of the sliders and the aerobraking start again for the new body.
+		var new_id := _selected_target_id()
+		if new_id != "":
+			GameState.target_orbits[new_id] = _orbit_for_body(new_id, plan["target_orbit"])
+			_make_plan(false)
+			if not plan.is_empty():
+				last_target = _frame_id()
+				_start_zoom(last_target, false)
+			return
 	legs = [GameState.parked_leg()]
 	plan = {}
 	message = ""
+
+
+## The orbit (rp_alt_km, ra_alt_km, offset_deg) kept for another body: the same numbers, except that the periapsis
+## is raised above the atmosphere limit of the body and nothing goes above the highest possible altitude.
+func _orbit_for_body(body_id: String, orbit: Dictionary) -> Dictionary:
+	var body: Dictionary = bodies[body_id]
+	var highest := GameState.max_orbit_altitude_km(body_id)
+	var rp := float(orbit["rp_alt_km"])
+	var ra := float(orbit["ra_alt_km"])
+	if body.get("atmosphere") is Dictionary:
+		rp = maxf(rp, float((body["atmosphere"] as Dictionary)["min_periapsis_altitude_km"]))
+	rp = minf(rp, highest)
+	ra = minf(maxf(ra, rp + OrbitControl.EPS), highest + OrbitControl.EPS)
+	rp = minf(rp, ra - OrbitControl.EPS)
+	return {"rp_alt_km": rp, "ra_alt_km": ra, "offset_deg": float(orbit["offset_deg"])}
 
 
 ## "Keep current course": drops the draft and shows the course the ship is following again, with its
@@ -872,7 +900,7 @@ func _sync_orbit_control() -> void:
 		return
 	var target: Dictionary = bodies[plan["target_id"]]
 	var orbit: Dictionary = plan["target_orbit"]
-	orbit_control.setup(float(target["radius_km"]), float(target["radius_km"]) * 100.0)
+	orbit_control.setup(float(target["radius_km"]), GameState.max_orbit_altitude_km(str(plan["target_id"])))
 	orbit_control.set_orbit(float(orbit["rp_alt_km"]), float(orbit["ra_alt_km"]), float(orbit["offset_deg"]))
 
 
@@ -1248,9 +1276,10 @@ func _info_text() -> String:
 	lines.append("Budget: %s EUR" % GameState.thousands(GameState.budget_eur))
 	if GameState.stop_reason != "" and Time.get_ticks_msec() - GameState.stop_ms < 20000:   # (a test line: why the warp dropped)
 		lines.append("Warp stopped: %s" % GameState.stop_reason)
-	if retro_shown > 0.001 and retro_shown < 0.999:   # (a test line: shown while the ship turns)
+	var turn_shown := retro_shown if (retro_shown > 0.001 and retro_shown < 0.999) else fixed_shown
+	if turn_shown > 0.001 and turn_shown < 0.999:   # (a test line: shown while the ship turns)
 		lines.append("Turning: %.0f%% of a half turn | rate %.1f deg/s, a half turn takes %.1f s" % [
-				100.0 * retro_shown, GameState.rotation_rate_deg_s(), GameState.half_turn_days() * 86400.0])
+				100.0 * turn_shown, GameState.rotation_rate_deg_s(), GameState.half_turn_days() * 86400.0])
 	if not GameState.cargo.is_empty():
 		var names: PackedStringArray = []
 		for type_id in GameState.cargo:
@@ -1388,8 +1417,15 @@ func _draw_map() -> void:
 	var attitude := GameState.attitude_at(time_jd)
 	var retro := _turn_towards(float(attitude["retro"]))
 	var heading := ship_angle + PI * retro   # nose first, turning to tail first for retrograde burns and aerobraking
+	var fixed_weight := _turn_towards(float(attitude["fixed"]), true)   # (the same turning rate as for every other turn)
+	var burn_now := int(attitude["burn"])
+	if fixed_weight > 0.0:
+		# The axis-turning burn: the ship turns from its course to a heading fixed in space and back again.
+		heading = lerp_angle(heading, float(attitude["fixed_angle"]), fixed_weight)
+		if burn_now == 2 and fixed_weight < 0.999:
+			burn_now = 0   # (the engine only burns once the ship points the right way)
 	ship_request = {"pos": p, "angle": heading, "sun": Vector2(to_sun.x, -to_sun.y).rotated(-heading),
-			"burn": int(attitude["burn"]), "retro": retro, "heat": GameState.heat_at(time_jd), "alpha": sprite_a, "light": _ship_light(orbited)}
+			"burn": burn_now, "retro": retro, "heat": GameState.heat_at(time_jd), "alpha": sprite_a, "light": _ship_light(orbited)}
 	if triangle_a > 0.0:
 		var triangle := Color.WHITE.lerp(Color(1.0, 0.5, 0.15), float(ship_request["heat"]))   # glows orange while it heats up
 		triangle.a = triangle_a
@@ -1608,14 +1644,23 @@ func _apply_sprites() -> void:
 ## The attitude the ship shows: it moves towards the attitude the plan wants, but never faster than the ship can turn
 ## (in game time). So when a plan is aborted, or the attitude changes for any other reason, the ship turns round
 ## in the time a turn takes instead of jumping.
-func _turn_towards(wanted: float) -> float:
-	var elapsed_s := (time_jd - retro_jd) * 86400.0
-	if retro_jd < 0.0 or elapsed_s < 0.0:
-		retro_shown = wanted   # first frame, or time went backwards
+## (fixed_heading: the same rule for the turn to the fixed heading of the axis-turning burn, 0 = pointing along the
+## course, 1 = at the burn heading; it has its own state.)
+func _turn_towards(wanted: float, fixed_heading := false) -> float:
+	var shown := fixed_shown if fixed_heading else retro_shown
+	var last_jd := fixed_jd if fixed_heading else retro_jd
+	var elapsed_s := (time_jd - last_jd) * 86400.0
+	if last_jd < 0.0 or elapsed_s < 0.0:
+		shown = wanted   # first frame, or time went backwards
 	else:
-		retro_shown = move_toward(retro_shown, wanted, GameState.rotation_rate_deg_s() / 180.0 * elapsed_s)
-	retro_jd = time_jd
-	return retro_shown
+		shown = move_toward(shown, wanted, GameState.rotation_rate_deg_s() / 180.0 * elapsed_s)
+	if fixed_heading:
+		fixed_shown = shown
+		fixed_jd = time_jd
+	else:
+		retro_shown = shown
+		retro_jd = time_jd
+	return shown
 
 
 ## Shows the ship sprite (hull lit by the Sun, glow layer, engine flame while a burn is going on).
@@ -1699,7 +1744,7 @@ func _apply_ship() -> void:
 		var burn := int(ship_request["burn"])
 		var retro_now := float(ship_request["retro"])
 		# The flame only burns once the ship has turned the right way round (prograde: nose first, retrograde: tail first).
-		ship_flame.visible = (burn > 0 and retro_now < 0.05) or (burn < 0 and retro_now > 0.95)
+		ship_flame.visible = (burn == 1 and retro_now < 0.05) or (burn < 0 and retro_now > 0.95) or burn == 2   # (2: the axis-turning burn, at its fixed heading)
 		ship_flame.scale = Vector2(1.0 + 0.12 * sin(Time.get_ticks_msec() * 0.03), 1.0)
 
 

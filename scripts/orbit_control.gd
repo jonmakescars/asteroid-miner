@@ -76,12 +76,12 @@ func _init() -> void:
 
 
 ## Adds a label, a spin box and a slider; the slider is the last child, the spin box is returned.
-func _add_row(title: String, _altitude: bool) -> SpinBox:
+func _add_row(title: String, altitude: bool) -> SpinBox:
 	var label := Label.new()
 	label.text = title
 	add_child(label)
 	var spin := SpinBox.new()
-	spin.allow_greater = true
+	spin.allow_greater = not altitude   # (an altitude cannot be higher than the sphere of influence of the body)
 	spin.allow_lesser = true
 	spin.custom_minimum_size = Vector2(110, 40)
 	add_child(spin)
@@ -101,7 +101,7 @@ func setup(body_radius_km: float, max_altitude_km: float) -> void:
 		(slider as HSlider).max_value = _to_slider(max_alt_km)
 	for spin in [_rp_spin, _ra_spin]:
 		(spin as SpinBox).min_value = MIN_FRACTION * radius_km
-		(spin as SpinBox).max_value = max_alt_km * 10.0
+		(spin as SpinBox).max_value = max_alt_km
 		(spin as SpinBox).step = 0.1
 	_syncing = false
 
@@ -143,12 +143,12 @@ func _commit(which: String, value: float) -> void:
 	var offset := offset_deg
 	match which:
 		"rp":
-			rp = value
+			rp = minf(value, max_alt_km)
 			var pair := normalise(rp, ra, "rp")
 			rp = pair.x
 			ra = pair.y
 		"ra":
-			ra = value
+			ra = minf(value, max_alt_km)
 			var pair := normalise(rp, ra, "ra")
 			rp = pair.x
 			ra = pair.y

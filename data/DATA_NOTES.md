@@ -442,3 +442,66 @@ No code change beyond the build label ("version 0.1 - Step 10 aq"). This zip hol
 - Cause of the 10au test failures: `_use_propulsive_capture` (capture without aerobraking) put the target orbit at `_arrival_axis` (the aimed axis, at most 20 deg from the natural direction) instead of `_axis_deg` (the universal axis), so the turn burn was paid but never carried out (Earth to Moon with offset 90 stayed at 260 deg; Earth to Ceres gave 166 deg). The aerobraking path already used `_axis_deg` for its last leg.
 - Now, if a turn is left after aiming (more than 0.5 deg), the propulsive capture has two legs: "Capture orbit" at the arrival axis, and half an orbit later (at the apoapsis, where the turn burn is) the target orbit at the universal axis. Without a turn it is one leg at the universal axis. `t_end` is the time of the turn.
 - Build label: "version 0.1 - Step 10 av".
+
+## Step 10aw: the axis turn happens at the crossing point of the two orbits (B-021)
+
+- 10av turned the axis at the apoapsis, where the old and the new ellipse do not meet, so the ship jumped to the new orbit (position snap during the burn). Now (`AeroBraking._append_turn_leg`) the ship coasts on the capture orbit (target shape, aimed axis) to the first of the two points where this orbit crosses the target orbit (axis universal). These lie on the line that bisects the two axes: true anomaly turn/2 or turn/2 + 180 deg on the old orbit, minus the turn on the new one. At a crossing both orbits have the same position and speed, only the radial speed changes sign, so the burn is radial and costs exactly what `axis_turn_dv` says (2 e v sin(turn/2)). No position jump.
+- It is used for the propulsive capture (turn starts at the periapsis, anomaly 0) and after the last aerobraking pass (ship at the apoapsis or periapsis of the target-shaped orbit, `final_anomaly`). The label of the first leg is "Capture orbit around X" (kind aero), the leg after the turn "Orbit around X" (kind orbit). `t_end` is the time of the turn burn.
+- Aiming (20 deg free, `AIM_RANGE_DEG`) is unchanged.
+- Helper `_mean_anomaly_deg(e, nu)` (true to mean anomaly).
+- Build label: "version 0.1 - Step 10 aw".
+
+## Step 10ax: the axis-turn burn is shown as a rotation and stretch (B-022)
+
+- During the burn the shown orbit (`GameState.morph_at`) was a linear blend of periapsis, apoapsis and axis between the old and the new orbit, which looks like morphing and moves the orbit away from the ship. For the legs flagged `axis_turn` (the leg after the turn, set in `AeroBraking._append_turn_leg`) `_axis_turn_orbit` is used instead: P is the crossing point, the velocity goes linearly from the old to the new one (only the radial part differs), and the orbit shown is the one through P with that velocity (`CourseChange.state_segment`). The orbit therefore turns about P and shrinks and grows a little in between, and the ship stays on it.
+- `set_morph_times`: the axis turn is its own burn window (duration from `axis_turn_dv`), the other capture burn gets the rest of the delta-v (was the whole delta-v for each leg).
+- Build label: "version 0.1 - Step 10 ax".
+
+## Step 10ay: view zoom with the ship's apoapsis, slider limit, planner stays open (B-023)
+
+- `GameState.view_extent_km`: a ship that is in orbit around the body (leg parent = the body, kind not "transfer") and whose apoapsis is inside the sphere of influence keeps its whole orbit in the view: extent = max(standard, apoapsis * 1.1). Before, a wide orbit around Mars (apoapsis 40,000 km, wider than Deimos) made the automatic view jump out to the Sun.
+- `GameState.max_orbit_altitude_km(id)`: sphere of influence minus the radius (at least one radius); 100 radii for bodies without a sphere of influence. `OrbitControl.setup` uses it for the sliders and the spin boxes; an altitude can no longer be typed above it (`allow_greater` is off for the altitude boxes, and `_commit` limits the value).
+- Changing the destination while the planner is open (`OrbitView._on_target_changed`): the planner stays open. The orbit (periapsis, apoapsis, offset) is kept (`_orbit_for_body`), but the periapsis is raised to the atmosphere limit of the new body if needed and the altitudes are limited to its maximum; then `_make_plan(false)` plans again, so aerobraking and the limits start fresh for the new body. Without an open planner (or during a flight) nothing changed.
+- Build label: "version 0.1 - Step 10 ay".
+
+## Step 10az: ship attitude during the axis-turn burn (B-024)
+
+- Cause: the ship's heading is the velocity direction on the current leg (flipped for a retrograde burn). The axis-turn burn is radial at the crossing point, so `_burn_is_prograde` was practically random (it showed retrograde the whole time), and the heading followed the old course until the leg switched, then snapped to the new one.
+- Now the windows of axis-turn legs (`GameState.manoeuvre_windows`, flag `fixed`) carry `fixed_angle` = direction of the velocity change at the crossing point (`_burn_heading`, cached in the leg as `burn_heading`; screen angle, the nose points along the thrust). `attitude_at` returns `fixed` (0..1) and `fixed_angle`: the ship turns from its course to that heading during the usual lead time (a half turn at the rotation rate) before the burn, keeps it fixed in space for the whole burn (`burn` = 2), and turns back to its course afterwards. `OrbitView` blends the heading with `lerp_angle`; the flame burns for `burn == 2`.
+- Retro state (nose first / tail first) is not changed by this burn; the next burn uses the same previous attitude as before.
+- Not changed: other burns, aerobraking passes, the line fade (still planned, B-025).
+- Build label: "version 0.1 - Step 10 az".
+
+## Step 10ba: orbit change with a new axis at the body the ship orbits (B-025)
+
+- Seen in 10az: changing the orbit at Ceres from offset +90 to -90 made the ship jump to the old periapsis and then to the new one: no turn of the ship, no burn. Cause (`MissionPlanner._plan_orbit_change`): the two apsis burns lead to the target shape at the axis of the old orbit, but the final orbit leg was drawn at the universal target axis directly (and with zero delta-v for the burns when only the axis differs), so the ship switched orbits without any burn. `capture_phase_deg` was also the axis of the old orbit even when the first burn already put the new periapsis on the target axis (circular start).
+- Now `capture_phase_deg` is the axis of the orbit the burns lead to (`middle_axis`). If a turn to the universal axis is left (`AeroBraking.axis_turn_deg` > 0.5 deg), the capture leg is the target shape at that axis, starting where the apsis burns end (`final_anomaly`), and `AeroBraking._append_turn_leg` adds the radial burn at the crossing point of the two orbits (same as after an arrival; `axis_turn_dv` is in `dv_arrival`; `t_end` is the time of the turn). The ship attitude for this burn is the one from 10az.
+- Build label: "version 0.1 - Step 10 ba".
+
+## Step 10bb: the turn to and from the axis-turn burn heading at the ship's turning rate (B-026)
+
+- Seen in 10ba: the ship still turned instantly to the burn heading before the axis-turn burn and back afterwards. In 10az the blend between the course and the burn heading was a function of the game time only (smoothstep over one half-turn time); the other turns (retro/prograde, aerobraking) additionally go through `OrbitView._turn_towards`, which never lets the shown attitude change faster than `GameState.rotation_rate_deg_s()` in game seconds.
+- Now `GameState.attitude_at` returns `fixed` as the wanted value (1 from one half-turn time before the burn until the end of the burn, otherwise 0; `burn` = 2 only inside the burn) and `OrbitView` runs it through the same `_turn_towards` (new parameter `fixed_heading`, own state `fixed_shown`/`fixed_jd`; the body of the function is the same for both). The heading is `lerp_angle(course heading, fixed_angle, fixed_shown)`; the flame burns only when `fixed_shown` has reached 1.
+- The test line "Turning: ..." (top left) is now also shown during this turn.
+- Build label: "version 0.1 - Step 10 bb".
+
+## Step 10bc: the change-over from the local course to the transfer when leaving an eccentric orbit (B-027)
+
+- Seen in 10bb: leaving an eccentric orbit of Phobos (periapsis 20 km, apoapsis 500 km) for Deimos, the blue course left the moon on a line that bent away well inside the parking orbit: the change-over from the local course (hyperbola round the moon) to the transfer's own course happened too close in.
+- Cause: `GameState._blend_hyperbola` uses the periapsis radius `rp` of the local hyperbola for its sizes (pure hyperbola inside 3 rp, pure transfer course beyond max(6 a, 12 rp)). For an eccentric parking orbit the periapsis is much smaller than the orbit, and for a tiny moon `a` is a few metres, so 12 rp (about 400 km here) was less than the apoapsis.
+- Now `transfer_leg_for_plan` stores `hyp["scale"]` = the apoapsis radius of the parking orbit (`a (1 + e)`), and `_blend_hyperbola` uses `max(rp, scale)` in place of rp. For circular parking orbits nothing changes (apoapsis = periapsis radius). Arrival side unchanged (it does not blend).
+- Build label: "version 0.1 - Step 10 bc".
+
+## Step 10bd: the view includes the intended and the future orbits; no warp drop inside an orbit around a tiny moon (B-028, B-029)
+
+- Seen in 10bc: (B-028) with the planner open the view could not be zoomed out far enough to show the intended orbit (it snapped out to the Martian view); (B-029) in an orbit around Phobos (periapsis 20 km, apoapsis 500 km) the time flow dropped to 1 min/s once per orbit at about 440 km altitude ("the ship enters a smaller view").
+- Cause: `GameState.view_extent_km` only counted the orbit the ship is on now, and only if its apoapsis was within the sphere of influence. Tiny moons (Phobos, Deimos) have no sphere of influence (`soi_radius_km` = 0), so their orbits were never counted; the view of a body without moons was 1.5 a (semi-major axis) which is smaller than the apoapsis (1.88 a here), so the ship left the Phobos view on every orbit and `_next_view_entry` dropped the warp when it came back.
+- Now: new `GameState.max_orbit_radius_km(id)` = sphere of influence (at least two radii), 100 radii above the surface for bodies without one, infinite for the Sun. `view_extent_km` includes the apoapsis + 10% of every orbit leg round the body from the current leg on (the orbit of the ship and the orbits of a launched plan) and of the intended orbit of the plan in the planner (`plan["ra_t"]` of `plan["target_id"]`), as long as the apoapsis is within `max_orbit_radius_km`. Since the planner limits the altitude of orbits to the same value (`max_orbit_altitude_km`), an orbit always fits in its view: the altitude where the ship is "approaching" (enters the view of the body and drops the warp) is never lower than the highest orbit.
+- Build label: "version 0.1 - Step 10 bd".
+
+## Step 10be: the route leaves an eccentric orbit tangentially (B-031)
+
+- Seen in 10bd: leaving an eccentric orbit of Phobos for Deimos, the blue route left the orbit at a sharp angle at the ship's position instead of continuing along the direction of flight.
+- Cause: the local hyperbola in `GameState.transfer_leg_for_plan` had its periapsis at the departure point, so it left across the radius. That equals the direction of flight only at an apsis (or on a circular orbit). On an eccentric orbit the ship's velocity at the departure point can be tens of degrees off that.
+- Now: the hyperbola is built to pass through the departure point with the same radius, the same speed at infinity and the same direction as the orbit's velocity there (angular momentum from the flight-path angle, eccentricity from it, periapsis angle and time of periapsis back-calculated from the true anomaly). Circular orbits, orbits at an apsis (angle < ~3 deg from the radius normal) and clockwise orbits keep the old construction.
+- Build label: "version 0.1 - Step 10 be".

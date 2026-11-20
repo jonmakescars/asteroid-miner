@@ -410,6 +410,39 @@ static func axis_turn_dv(plan: Dictionary) -> float:
 	return 2.0 * e * sqrt(float(plan["gm_target"]) / p) * absf(sin(deg_to_rad(axis_turn_deg(plan)) * 0.5))
 
 
+## Mean anomaly (degrees, 0 to 360) of the point with the true anomaly nu_deg on an orbit with the eccentricity e.
+static func _mean_anomaly_deg(e: float, nu_deg: float) -> float:
+	var nu := deg_to_rad(nu_deg)
+	var ecc := 2.0 * atan2(sqrt(1.0 - e) * sin(nu * 0.5), sqrt(1.0 + e) * cos(nu * 0.5))
+	return fposmod(rad_to_deg(ecc - e * sin(ecc)), 360.0)
+
+
+## The ship is on the target-shaped orbit at the arrival axis, at the time t and the mean anomaly m0_deg. Two such
+## orbits with different axes cross at two points on the line that bisects the axes, and at a crossing the ship has
+## the same position and speed on both: only its radial speed changes sign, so a radial burn turns the axis without
+## moving the ship. This adds the leg of the target orbit (at the universal axis) starting at the first crossing the
+## ship reaches, and returns the time of that burn.
+static func _append_turn_leg(legs: Array, plan: Dictionary, t: float, m0_deg: float) -> float:
+	var gm := float(plan["gm_target"])
+	var rp_t := float(plan["rp_t"])
+	var ra_t := float(plan["ra_t"])
+	var e := (ra_t - rp_t) / (ra_t + rp_t)
+	var turn := wrapf(_axis_deg(plan) - _arrival_axis(plan), -180.0, 180.0)   # (positive: counter-clockwise)
+	var n_deg_day := TransferPlanner.mean_motion_deg_per_day(gm, 0.5 * (rp_t + ra_t))
+	var best_dt := INF
+	var best_nu2 := 0.0
+	for nu1 in [turn * 0.5, turn * 0.5 + 180.0]:   # true anomaly on the old orbit at the two crossings
+		var dt := fposmod(_mean_anomaly_deg(e, nu1) - m0_deg, 360.0) / n_deg_day
+		if dt < best_dt:
+			best_dt = dt
+			best_nu2 = nu1 - turn   # (the same point seen from the new orbit)
+	var t_turn := t + best_dt
+	legs.append({"parent": plan["target_id"],
+			"segment": _ellipse(gm, rp_t, ra_t, t_turn, _axis_deg(plan), _mean_anomaly_deg(e, best_nu2)),
+			"t_start": t_turn, "label": "Orbit around %s" % plan["target_name"], "kind": "orbit", "axis_turn": true})
+	return t_turn
+
+
 ## Falls back to the propulsive capture burn at the target orbit.
 static func _use_propulsive_capture(plan: Dictionary) -> void:
 	plan["dv_arrival"] = float(plan["dv_capture"]) + axis_turn_dv(plan)
@@ -418,24 +451,18 @@ static func _use_propulsive_capture(plan: Dictionary) -> void:
 	var rp_t := float(plan["rp_t"])
 	var ra_t := float(plan["ra_t"])
 	if axis_turn_deg(plan) > 0.5:
-		# The ship is captured on the orbit it can reach (axis aimed as far as possible), and at the apoapsis the axis
-		# is turned to the universal axis of the target orbit (the burn is part of dv_arrival). Before 10av the orbit
-		# stayed at the arrival axis and the turn burn was paid for nothing.
-		var t_turn := float(plan["t_arr"]) + _period_days(gm_t, 0.5 * (rp_t + ra_t)) * 0.5
-		plan["capture_legs"] = [{
+		# The ship is captured on the orbit it can reach (axis aimed as far as possible) and coasts to the point where
+		# that orbit crosses the target orbit. There a radial burn turns the axis (part of dv_arrival): the ship
+		# stays where it is and only the orbit changes.
+		var legs: Array = [{
 			"parent": plan["target_id"],
 			"segment": _ellipse(gm_t, rp_t, ra_t, float(plan["t_arr"]), _arrival_axis(plan), 0.0),
 			"t_start": float(plan["t_arr"]),
 			"label": "Capture orbit around %s" % plan["target_name"],
 			"kind": "aero",
-		}, {
-			"parent": plan["target_id"],
-			"segment": _ellipse(gm_t, rp_t, ra_t, t_turn, _axis_deg(plan), 180.0),
-			"t_start": t_turn,
-			"label": "Orbit around %s" % plan["target_name"],
-			"kind": "orbit",
 		}]
-		plan["t_end"] = t_turn
+		plan["t_end"] = _append_turn_leg(legs, plan, float(plan["t_arr"]), 0.0)
+		plan["capture_legs"] = legs
 	else:
 		plan["capture_legs"] = [{
 			"parent": plan["target_id"],
@@ -546,8 +573,14 @@ static func apply(plan: Dictionary, enabled: bool, n: int, h_km: float, recenter
 				"label": "Raising the periapsis", "kind": "aero"})
 		t += _period_days(gm, 0.5 * (rp_t + ra)) * 0.5
 		final_anomaly = 0.0
-	legs.append({"parent": plan["target_id"], "segment": _ellipse(gm, rp_t, ra_t, t, _axis_deg(plan), final_anomaly),
-			"t_start": t, "label": "Orbit around %s" % plan["target_name"], "kind": "orbit"})
+	if axis_turn_deg(plan) > 0.5:
+		# The ship is on the target-shaped orbit at the aimed axis; the axis is turned at the next crossing point.
+		legs.append({"parent": plan["target_id"], "segment": _ellipse(gm, rp_t, ra_t, t, phase, final_anomaly),
+				"t_start": t, "label": "Capture orbit around %s" % plan["target_name"], "kind": "aero"})
+		t = _append_turn_leg(legs, plan, t, final_anomaly)
+	else:
+		legs.append({"parent": plan["target_id"], "segment": _ellipse(gm, rp_t, ra_t, t, _axis_deg(plan), final_anomaly),
+				"t_start": t, "label": "Orbit around %s" % plan["target_name"], "kind": "orbit"})
 	plan["capture_legs"] = legs
 	aero["entry_times"] = entry_times
 	plan["dv_arrival"] = final_burn

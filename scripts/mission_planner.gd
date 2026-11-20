@@ -292,7 +292,7 @@ static func _plan_orbit_change(body_id: String, segment: Dictionary, t_start: fl
 		"aimable": false,
 		"dv_circularize": 0.0,
 		"arrival_energy": -gm / (2.0 * a),
-		"capture_phase_deg": axis,
+		"capture_phase_deg": middle_axis,   # the axis of the orbit the two burns lead to (a turn to the target axis is left over)
 		"gm_target": gm,
 		"dv_capture": dv_second,
 		"orbit_change": true,
@@ -312,8 +312,16 @@ static func _plan_orbit_change(body_id: String, segment: Dictionary, t_start: fl
 		plan["dv_arrival"] = 0.0
 		plan["capture_legs"][0]["t_start"] = plan["t_arr"]
 		final_anomaly = 0.0 if raise_apoapsis_first else 180.0   # the ship is where the burn was
-	plan["capture_legs"][0]["segment"] = AeroBraking._ellipse(gm, rp_t, ra_t, float(plan["t_arr"]),
-			AeroBraking._axis_deg(plan), final_anomaly)
+	var legs: Array = plan["capture_legs"]
+	legs[0]["t_start"] = plan["t_arr"]
+	if AeroBraking.axis_turn_deg(plan) > 0.5:
+		# The two burns lead to the target shape at the axis of the old orbit. The axis is then turned by the radial burn
+		# at the point where the two orbits cross (as after an arrival): the ship coasts there from where the burns ended.
+		legs[0]["segment"] = AeroBraking._ellipse(gm, rp_t, ra_t, float(plan["t_arr"]), AeroBraking._arrival_axis(plan), final_anomaly)
+		legs.resize(1)
+		plan["t_end"] = AeroBraking._append_turn_leg(legs, plan, float(plan["t_arr"]), final_anomaly)
+	else:
+		legs[0]["segment"] = AeroBraking._ellipse(gm, rp_t, ra_t, float(plan["t_arr"]), AeroBraking._axis_deg(plan), final_anomaly)
 	return plan
 
 
