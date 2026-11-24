@@ -27,6 +27,8 @@ const RING_BELOW_PX := 2.0         # a body whose true radius is smaller than th
 const ORBIT_SAMPLES := 160
 # Orbit lines fade in with the size of the view of their body on the screen (radius of the view in pixels, zooming
 # out) and out when the view is many times bigger than the screen (in half-screens, zooming in). 10bk: 16-60 px and 1.6-5.
+## Atmospheric halo layers (atmo_day / atmo_twilight): turn them if the pack draws the Sun on another side than the right.
+const ATMO_ROTATION_OFFSET_DEG := 0.0
 const LINE_FADE_SMALL_PX := Vector2(13.0, 48.0)
 const LINE_FADE_BIG_HALF_SCREENS := Vector2(8.0, 25.0)
 const MOBILE_UI_SCALE := 2.0
@@ -1633,13 +1635,23 @@ func _place_body_sprites(id: String, screen_position: Vector2, true_radius_px: f
 	var glow_key := key + "_glow"
 	if not SpriteLibrary.entry(glow_key).is_empty() and not (SpriteLibrary.entry(key).get("normal") == null):
 		_request_sprite(glow_key, glow_key, screen_position, sprite_scale, sun_dir, alpha, true, key)
+	# Atmospheric halo: two generic white layers, added over the body, tinted per body, turned towards the Sun.
+	var atmosphere := SpriteLibrary.atmosphere(id)
+	if not atmosphere.is_empty():
+		for layer in ["day", "twilight"]:
+			var layer_key := SpriteLibrary.atmo_key("atmo_" + layer)
+			if layer_key != "":
+				var tint: Color = atmosphere[layer]
+				var strength := float(atmosphere[layer + "_strength"])
+				_request_sprite("atmo_%s_%s" % [layer, id], layer_key, screen_position, sprite_scale, sun_dir,
+						alpha * strength, false, "", tint, sun_dir.angle() + deg_to_rad(ATMO_ROTATION_OFFSET_DEG))
 	for ring_key in ["bodies/%s_rings" % id]:
 		if not SpriteLibrary.entry(ring_key).is_empty():
 			_request_sprite(ring_key, ring_key, screen_position, sprite_scale, sun_dir, alpha, false)
 	return alpha / maxf(marker_alpha, 0.0001)
 
 
-func _request_sprite(node_key: String, sprite_key: String, screen_position: Vector2, sprite_scale: float, sun_dir: Vector2, alpha: float, lit: bool, night_of := "") -> void:
+func _request_sprite(node_key: String, sprite_key: String, screen_position: Vector2, sprite_scale: float, sun_dir: Vector2, alpha: float, lit: bool, night_of := "", tint := Color.WHITE, rotation_rad := 0.0) -> void:
 	if sprite_requests.has(node_key):
 		# The same body drawn by two scenes at once: the camera body's own scene has exact positions (the others are
 		# millions of pixels away and jitter in 32-bit floats), so its position wins; the opacity is the larger one.
@@ -1648,7 +1660,7 @@ func _request_sprite(node_key: String, sprite_key: String, screen_position: Vect
 		if int(earlier["rank"]) < scene_rank:
 			earlier["alpha"] = alpha
 			return
-	sprite_requests[node_key] = {"sprite": sprite_key, "pos": screen_position, "scale": sprite_scale, "sun": sun_dir, "alpha": alpha, "lit": lit, "rank": scene_rank, "night_of": night_of}
+	sprite_requests[node_key] = {"sprite": sprite_key, "pos": screen_position, "scale": sprite_scale, "sun": sun_dir, "alpha": alpha, "lit": lit, "rank": scene_rank, "night_of": night_of, "tint": tint, "rot": rotation_rad, "additive": tint != Color.WHITE}
 
 
 ## Shows the requested sprites (creating the nodes the first time) and hides the rest.
@@ -1671,6 +1683,10 @@ func _apply_sprites() -> void:
 			node.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
 			var night_of := str(request.get("night_of", ""))
 			var material: ShaderMaterial = null
+			if bool(request.get("additive", false)):
+				var add := CanvasItemMaterial.new()   # (halo layers add their light to the picture)
+				add.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+				node.material = add
 			if night_of != "":
 				material = SpriteLibrary.night_material(SpriteLibrary.entry(night_of).get("normal") as Texture2D)   # (the lights of a body, lit by its normal map)
 			else:
@@ -1686,8 +1702,12 @@ func _apply_sprites() -> void:
 		node.visible = true
 		node.position = request["pos"]
 		node.scale = Vector2.ONE * float(request["scale"])
-		node.modulate = Color(1, 1, 1, float(request["alpha"]))
-		if bool(request["lit"]) and lit_material != null:
+		node.rotation = float(request.get("rot", 0.0))
+		var tint_colour: Color = request.get("tint", Color.WHITE)
+		node.modulate = Color(tint_colour.r, tint_colour.g, tint_colour.b, float(request["alpha"]))
+		if bool(request.get("additive", false)):
+			pass   # (keeps its additive material)
+		elif bool(request["lit"]) and lit_material != null:
 			node.material = lit_material
 			lit_material.set_shader_parameter("sun_dir", request["sun"])
 		else:

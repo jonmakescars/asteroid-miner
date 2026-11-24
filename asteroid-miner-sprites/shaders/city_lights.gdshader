@@ -18,6 +18,12 @@ uniform float strength = 1.0;
 uniform float fade_from = 0.04;
 uniform float fade_to = -0.30;
 
+varying vec4 modulate;
+
+void vertex() {
+	modulate = COLOR;
+}
+
 void fragment() {
 	vec3 n = texture(normal_map, UV).rgb * 2.0 - 1.0;
 	n.y = -n.y;
@@ -27,8 +33,8 @@ void fragment() {
 		d = normalize(sun_dir);
 	}
 	float lit = dot(n, vec3(d, 0.0));
-	float night = smoothstep(fade_from, fade_to, lit);
-	vec4 c = COLOR;
-	c.rgb *= night * strength;
-	COLOR = c;
+	// (smoothstep needs its first edge below the second one; with the edges the other way round the result is undefined)
+	float night = 1.0 - smoothstep(fade_to, fade_from, lit);
+	vec4 tex = texture(TEXTURE, UV);
+	COLOR = vec4(tex.rgb * night * strength, tex.a) * modulate;
 }

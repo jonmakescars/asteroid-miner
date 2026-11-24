@@ -8,6 +8,8 @@ extends RefCounted
 const ROOTS: Array = ["res://sprites/", "res://asteroid-miner-sprites/sprites/"]
 const SHADERS: Array = ["res://shaders/sprite_lit.gdshader", "res://asteroid-miner-sprites/shaders/sprite_lit.gdshader"]
 const NIGHT_SHADERS: Array = ["res://shaders/city_lights.gdshader", "res://asteroid-miner-sprites/shaders/city_lights.gdshader"]
+const ATMOSPHERE_PATH := "res://data/atmospheres.json"   # tints and strengths of the atmospheric halo per body
+const ATMO_FOLDERS: Array = ["bodies", "scenery", "effects"]   # where atmo_day.png / atmo_twilight.png may be in the pack
 const DISC_RADIUS_PX := 192.0   # every round body in the pack has a disc of this radius
 
 static var _ready_once := false
@@ -16,6 +18,8 @@ static var _manifest: Dictionary = {}
 static var _entries: Dictionary = {}   # key -> {texture, normal, glow, pivot}
 static var _shader: Shader = null
 static var _night_shader: Shader = null
+static var _atmospheres: Dictionary = {}
+static var _atmo_keys: Dictionary = {}   # layer name -> manifest key ("" = not found)
 
 
 static func _setup() -> void:
@@ -38,6 +42,11 @@ static func _setup() -> void:
 		if ResourceLoader.exists(path):
 			_shader = load(path) as Shader
 			break
+	var atmo: Variant = JSON.parse_string(FileAccess.get_file_as_string(ATMOSPHERE_PATH))
+	if typeof(atmo) == TYPE_DICTIONARY:
+		_atmospheres = atmo
+	else:
+		push_warning("%s not readable: no atmospheric halos (add *.json to the export filter)." % ATMOSPHERE_PATH)
 	for path: String in NIGHT_SHADERS:
 		if ResourceLoader.exists(path):
 			_night_shader = load(path) as Shader
@@ -109,3 +118,34 @@ static func night_material(normal: Texture2D) -> ShaderMaterial:
 	material.shader = _night_shader
 	material.set_shader_parameter("normal_map", normal)
 	return material
+
+
+## The manifest key of a generic halo layer ("atmo_day" or "atmo_twilight"), or "" when the pack does not have it.
+static func atmo_key(layer: String) -> String:
+	_setup()
+	if _atmo_keys.has(layer):
+		return _atmo_keys[layer]
+	var found := ""
+	if _root != "":
+		for folder: String in ATMO_FOLDERS:
+			if ResourceLoader.exists("%s%s/%s.png" % [_root, folder, layer]):
+				found = "%s/%s" % [folder, layer]
+				break
+	_atmo_keys[layer] = found
+	return found
+
+
+## The halo of a body: {day: Color, twilight: Color, day_strength, twilight_strength}, or {} when it has no atmosphere.
+static func atmosphere(id: String) -> Dictionary:
+	_setup()
+	if not _atmospheres.has(id):
+		return {}
+	var info: Dictionary = _atmospheres[id]
+	var day: Array = info["day"]
+	var twilight: Array = info["twilight"]
+	return {
+		"day": Color(float(day[0]), float(day[1]), float(day[2])),
+		"twilight": Color(float(twilight[0]), float(twilight[1]), float(twilight[2])),
+		"day_strength": float(info.get("day_strength", 1.0)),
+		"twilight_strength": float(info.get("twilight_strength", 1.0)),
+	}

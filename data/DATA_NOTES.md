@@ -566,7 +566,34 @@ No code change beyond the build label ("version 0.1 - Step 10 aq"). This zip hol
 
 - Not run (no Godot here): to be tried by Jon. The art (`earth_glow.png`, same size as `earth.png`, in the sprite pack next to `earth.png` and `earth_n.png`) is not in the repository I can see (the last version there has no `earth_glow.png`), so it has to be in `asteroid-miner-sprites/sprites/bodies/` for the lights to show. Without it nothing changes.
 - New shader `asteroid-miner-sprites/shaders/city_lights.gdshader` (copy it into the project with the zip): additive (`blend_add`) layer that shows the glow texture only where the Sun does not light the body. The lit side is worked out like in `sprite_lit.gdshader` for a planet (`sun_elevation` 0) from the body's own normal map and `sun_dir`, so the lights fade out where the daylight fades in (smoothstep from 0.04 to -0.30 of the lit value; `strength` scales the brightness).
+- (23 Nov) The shader samples `TEXTURE` itself and multiplies by a `modulate` varying (like sprite_lit.gdshader) instead of reading `COLOR`.
 - `SpriteLibrary.night_material(normal)` makes the material (null when the shader or the normal map is missing; then the lights are not shown at all, instead of showing all round).
 - `OrbitView._place_body_sprites` asks for the layer of any body that has a `<key>_glow.png` (so far only Earth): drawn above the body and its snow, lit by the body's normal map, with the body's opacity. `_request_sprite` has a new `night_of` parameter (the key of the body whose normal map is used) and `_apply_sprites` creates the night material for such a node.
 - The menu now shows only the build name: "Alpha v0.1.11.a Testing" (the word "Prototype, " in front is gone). Names from now on: Alpha v0.1.[step].[sub-step] Testing.
 - Not done in this build: the atmospheric halo (11b).
+
+## Step 11b: atmospheric halo
+
+- Not run (no Godot here): to be tried by Jon. The art (`atmo_day.png`, `atmo_twilight.png`, two generic white layers) is in the sprite pack of 23 Nov, but not in the repository I can see, so I could not look at it: the code looks for the files in `sprites/bodies/`, `sprites/scenery/` and `sprites/effects/` (`SpriteLibrary.atmo_key`), and draws nothing when they are missing.
+- Assumptions to check: both layers use the same scale as the body sprites (disc radius 192 px, pivot from sprites.json or the image centre), and the Sun is on the right of the picture (like `sun_dir` = right in the lighting shader). If the halo points the wrong way, change `ATMO_ROTATION_OFFSET_DEG` in `orbit_view.gd`.
+- New file `data/atmospheres.json`: per body id the day tint, the twilight tint (RGB 0-1) and the strengths of both layers. Earth blue with orange twilight, Mars butterscotch with blue twilight, Venus, Titan, Jupiter, Saturn, Uranus and Neptune with their own colours (only Earth and Mars exist in the game so far). These are my starting values, written without seeing the `atmosphere` entries of the pack's sprites.json, which are not read.
+- `OrbitView._place_body_sprites` asks for the two layers for every body listed there, with the body's position, scale and opacity times the strength; `_request_sprite` has new `tint` and `rotation_rad` parameters; `_apply_sprites` gives these nodes an additive material (`CanvasItemMaterial` blend add), the tint as colour and the rotation toward the Sun (the layers do not turn with the planet's own rotation or tilt).
+- Build label: "Alpha v0.1.11.b Testing".
+
+## Step 11b2: fix for the missing atmospheric halo
+
+- Not run (no Godot here): to be tried by Jon.
+- Seen in 11b (Jon, 24 Nov): no haze or twilight glow at Earth or Mars; the files `atmo_day.png` and `atmo_twilight.png` are in `asteroid-miner-sprites/sprites/effects/` (found by the code), both 460 x 460 px, Sun on the right.
+- Cause: `SpriteLibrary._setup()` never read `data/atmospheres.json` (the edit that added the loading did not apply in 11b), so `SpriteLibrary.atmosphere(id)` was empty for every body and no layer was requested. Now `_setup()` reads it, and writes a warning to the output when the file cannot be read.
+- Build label: "Alpha v0.1.11.b2 Testing".
+
+## Step 12a: Settings screen
+
+- Not run (no Godot here): to be tried by Jon.
+- New button "Settings" on the menu (between Ship design and Quit) opens `settings.tscn` (`scripts/settings_view.gd`); Back returns to the menu. The menu shows "Alpha v0.1.12.a Testing".
+- New class `UserSettings` (`scripts/user_settings.gd`): all settings are in one file, `user://user_settings.json` (on Windows `%APPDATA%/Godot/app_userdata/<project name>/`), written at every change. `UserSettings.DEFAULTS` holds the default of every setting; `get_value(key)`, `set_value(key, value)`, `reset_all()`, `is_imperial()`, and `on_changed(callable)` for screens that must apply a change at once (called with the key, or "" after a reset). A saved value of the wrong type is ignored. (`data/settings.json` is the starting conditions of a new game, a different thing.)
+- The screen has one row so far: Units (Metric or Imperial, default metric whatever the device language). The choice is saved, but the screens do not show imperial units yet (step 12c); a grey note says so.
+- `Reset to defaults` puts every setting back and shows the defaults in the rows.
+- Rows are made by `_add_choice` (drop-down list). The slider helper (slider with its number next to it) is written with the first slider setting in 12b, so that it is tested on a real setting.
+- The settings file is in `user://`, so the export filter does not matter for it.
+- Build label: "Alpha v0.1.12.a Testing".
