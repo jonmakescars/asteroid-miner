@@ -25,6 +25,7 @@ const DEFAULTS := {
 	"animations": true,        # the burn-up animation (more come later)
 	"ship_sprites": true,      # false: ships are always an icon on the map
 	"orientation": "auto",     # "auto", "portrait" or "landscape" (phones and tablets)
+	"show_frame_rate": true,   # the frame rate in the info text of the orbit map
 	"frame_cap": 60.0,         # frames per second: 30.0 or 60.0
 	"lighting_shader": true,   # false: bodies and ship are drawn flat, without light and shadow
 }

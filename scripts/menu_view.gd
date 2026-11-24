@@ -2,7 +2,7 @@ extends Control
 ## Start menu: opens the prototype screens.
 
 const MOBILE_UI_SCALE := 2.0
-const BUILD_LABEL := "Alpha v0.1.12.e Testing"   # shown in the menu; update it with every new build
+const BUILD_LABEL := "Alpha v0.1.12.g2 Testing"   # shown in the menu; update it with every new build
 const ENTRIES := [
 	["Orbit map", "res://main.tscn"],
 	["Ship design", "res://ship_design.tscn"],

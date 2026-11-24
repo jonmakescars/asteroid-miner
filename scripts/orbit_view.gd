@@ -718,14 +718,16 @@ func _on_target_changed() -> void:
 
 
 ## The orbit (rp_alt_km, ra_alt_km, offset_deg) kept for another body: the same numbers, except that the periapsis
-## is raised above the atmosphere limit of the body and nothing goes above the highest possible altitude.
+## is raised above the upper limit of the atmosphere of the body (where the orbit does not decay; B-038) and nothing
+## goes above the highest possible altitude. (The lower limit for aerobraking, min_periapsis_altitude_km, is not touched.)
 func _orbit_for_body(body_id: String, orbit: Dictionary) -> Dictionary:
 	var body: Dictionary = bodies[body_id]
 	var highest := GameState.max_orbit_altitude_km(body_id)
 	var rp := float(orbit["rp_alt_km"])
 	var ra := float(orbit["ra_alt_km"])
 	if body.get("atmosphere") is Dictionary:
-		rp = maxf(rp, float((body["atmosphere"] as Dictionary)["min_periapsis_altitude_km"]))
+		# (rounded up to the next whole km, plus 1 km, so that it is clearly above the limit: 158.2 -> 160 km)
+		rp = maxf(rp, ceilf(AeroBraking.interface_altitude_km(body["atmosphere"] as Dictionary)) + 1.0)
 	rp = minf(rp, highest)
 	ra = minf(maxf(ra, rp + OrbitControl.EPS), highest + OrbitControl.EPS)
 	rp = minf(rp, ra - OrbitControl.EPS)
@@ -1324,6 +1326,8 @@ func _info_text() -> String:
 		lines.append("Heat shield: %.0f%% used, %.0f%% left | Health: %.0f%%" % [GameState.shield_used_share() * 100.0,
 				(1.0 - GameState.shield_used_share()) * 100.0, GameState.ship_health * 100.0])
 	lines.append("Budget: %s EUR" % GameState.thousands(GameState.budget_eur))
+	if UserSettings.flag("show_frame_rate"):
+		lines.append("Frame rate: %d fps (limit %d)" % [Engine.get_frames_per_second(), int(UserSettings.number("frame_cap"))])
 	if GameState.stop_reason != "" and Time.get_ticks_msec() - GameState.stop_ms < 20000:   # (a test line: why the warp dropped)
 		lines.append("Warp stopped: %s" % GameState.stop_reason)
 	var turn_shown := retro_shown if (retro_shown > 0.001 and retro_shown < 0.999) else fixed_shown

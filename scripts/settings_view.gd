@@ -77,6 +77,7 @@ func _ready() -> void:
 	_add_choice(rows, "orientation", "Screen orientation", [["auto", "Automatic"], ["portrait", "Portrait only"], ["landscape", "Landscape only"]],
 			"Phones and tablets only.")
 	_add_choice(rows, "frame_cap", "Frame rate limit", [[30.0, "30 fps"], [60.0, "60 fps"]])
+	_add_check(rows, "show_frame_rate", "Show frame rate", "Adds a line with the current frames per second to the text at the top of the orbit map.")
 	_add_check(rows, "lighting_shader", "Lighting shader",
 			"When off, the bodies and the ship are drawn flat, without light and shadow (a fallback). Takes effect when the map is opened again.")
 	_add_section(rows, "Units")

@@ -665,3 +665,18 @@ No code change beyond the build label ("version 0.1 - Step 10 aq"). This zip hol
 - New defaults (Jon): `milkyway_black_level` 0.20 (was 0.10), `parallax_strength` 0.5 (was 0.25). Values already saved in user_settings.json stay until "Reset to defaults".
 - Menu: a "Credits" button (third entry, after Settings) opens the Credits screen: title, a scroll list of credits (heading and text) and a Back button to the menu. The credits are the constant `CREDITS` in `credits_view.gd` (add new entries there). For now one entry: NASA, for the star background (Deep Star Maps of the Scientific Visualization Studio; public domain; NASA does not endorse this game). The NASA logo is not used.
 - The text follows the text size setting (`apply_text_scale`), the heading uses `text_px`.
+
+## Step 12f: frame rate display
+
+- Not run (no Godot here). 12e was tested OK, and the 12c rows (animations, ship sprites, screen orientation, lighting shader) were reported OK by Jon on 24 Nov; the frame rate limit could not be checked without a display. Build label: "Alpha v0.1.12.f Testing".
+- The info text of the orbit map (`OrbitView._info_text`) has a new line after the budget: "Frame rate: N fps (limit L)" with N = `Engine.get_frames_per_second()` (updated by Godot about once a second) and L the Frame rate limit setting. New setting `show_frame_rate` (default true; check box "Show frame rate" in the Display section of Settings) switches the line off.
+
+## Step 12g: B-038 target orbit altitude when the destination changes
+
+- Not run (no Godot here). 12f was tested OK by Jon on 24 Nov. Build label: "Alpha v0.1.12.g Testing".
+- B-038 (found by Jon in 12f): with the ship in orbit of Mars, a transfer to Ceres with a target orbit of 7 km, then the destination changed to Earth: the target orbit altitude set itself to 60 km, inside the atmosphere. Cause: `OrbitView._orbit_for_body` (the orbit kept for another body) raised the periapsis only to `min_periapsis_altitude_km` (60 km at Earth), which is the lower limit for aerobraking. Now it is raised to the upper limit of the atmosphere, `AeroBraking.interface_altitude_km(atmosphere)` (about 158 km at Earth: scale height 8.5 km x ln(1.217 / 1e-8)), where the orbit does not decay.
+- Not changed: `min_periapsis_altitude_km` and everything that uses it for aerobraking (`aero_braking.gd`: the aerobraking altitude limits, the burn-up check), and typed or dragged values of the target orbit (below the upper limit they still give the decay warning, as before).
+
+## Step 12g2: B-038 rounding
+
+- Not run (no Godot here). Jon on 12g: the periapsis came out at 158.2 km and still gave the decay warning ("below 158 km"), because the upper limit of the atmosphere is 158.17 km. Now `OrbitView._orbit_for_body` raises the periapsis to `ceil(limit) + 1` km (Earth: 160 km), so it is clearly above the limit. Build label: "Alpha v0.1.12.g2 Testing".
