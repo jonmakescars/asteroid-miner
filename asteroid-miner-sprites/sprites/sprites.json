@@ -275,7 +275,8 @@
  "bodies/earth": {
   "files": [
    "earth.png",
-   "earth_n.png"
+   "earth_n.png",
+   "earth_glow.png"
   ],
   "size": [
    390,
@@ -286,8 +287,13 @@
    195.0
   ],
   "px_per_unit": 2,
-  "note": "Summer state: a small Arctic ice cap and Greenland in white, fading softly into the land. The north pole is shifted toward the top of the image by the axial tilt. Keep the sprite pointing the same way in space as the planet orbits; do not turn it with the orbit",
-  "disc_radius_px": 192
+  "note": "Summer state: a small Arctic ice cap and Greenland in white, fading softly into the land. The north pole is shifted toward the top of the image by the axial tilt. Keep the sprite pointing the same way in space as the planet orbits; do not turn it with the orbit. earth_glow.png holds the city lights: draw it on its own sprite with shaders/city_lights.gdshader, on top of earth and earth_snow, so it shows only on the night side",
+  "disc_radius_px": 192,
+  "atmosphere": {
+   "day_tint": "#8EC5FF",
+   "twilight_tint": "#FF9A50",
+   "strength": 1.0
+  }
  },
  "bodies/earth_snow": {
   "files": [
@@ -321,7 +327,12 @@
   ],
   "px_per_unit": 2,
   "note": "Seen from above the north pole, so the cloud belts are rings around a blue-grey polar region. The Great Red Spot is in the southern half and is not visible from here",
-  "disc_radius_px": 192
+  "disc_radius_px": 192,
+  "atmosphere": {
+   "day_tint": "#F0D8B0",
+   "twilight_tint": "#C89870",
+   "strength": 0.5
+  }
  },
  "bodies/mars": {
   "files": [
@@ -338,7 +349,12 @@
   ],
   "px_per_unit": 2,
   "note": "North polar ice cap in white with a darker collar around it. The north pole is shifted toward the top of the image by the axial tilt. Keep the sprite pointing the same way in space as the planet orbits; do not turn it with the orbit",
-  "disc_radius_px": 192
+  "disc_radius_px": 192,
+  "atmosphere": {
+   "day_tint": "#E8B48A",
+   "twilight_tint": "#7FA8E0",
+   "strength": 0.6
+  }
  },
  "bodies/mercury": {
   "files": [
@@ -610,7 +626,12 @@
   ],
   "px_per_unit": 2,
   "note": "Hazy orange with soft rings of haze and a darker hood over the pole",
-  "disc_radius_px": 192
+  "disc_radius_px": 192,
+  "atmosphere": {
+   "day_tint": "#E0A458",
+   "twilight_tint": "#C07838",
+   "strength": 1.0
+  }
  },
  "bodies/moons/titania": {
   "files": [
@@ -678,7 +699,12 @@
   ],
   "px_per_unit": 2,
   "note": "Deep blue with faint belts, white cloud streaks and one dark spot. The north pole is shifted toward the top of the image by the axial tilt. Keep the sprite pointing the same way in space as the planet orbits; do not turn it with the orbit",
-  "disc_radius_px": 192
+  "disc_radius_px": 192,
+  "atmosphere": {
+   "day_tint": "#90B8FF",
+   "twilight_tint": "#6080E0",
+   "strength": 0.6
+  }
  },
  "bodies/phobos": {
   "files": [
@@ -711,7 +737,12 @@
   ],
   "px_per_unit": 2,
   "note": "Pale gold belts and the dark hexagon at the north pole. The rings are a separate sprite, saturn_rings. The north pole is shifted toward the top of the image by the axial tilt. Keep the sprite pointing the same way in space as the planet orbits; do not turn it with the orbit",
-  "disc_radius_px": 192
+  "disc_radius_px": 192,
+  "atmosphere": {
+   "day_tint": "#F0E0B8",
+   "twilight_tint": "#D0A870",
+   "strength": 0.5
+  }
  },
  "bodies/saturn_rings": {
   "files": [
@@ -759,7 +790,12 @@
   ],
   "px_per_unit": 2,
   "note": "Pale cyan. The planet lies on its side, so the pole is at the top edge with a paler cap around it. The rings are a separate sprite, uranus_rings",
-  "disc_radius_px": 192
+  "disc_radius_px": 192,
+  "atmosphere": {
+   "day_tint": "#B8F0F0",
+   "twilight_tint": "#80C8E0",
+   "strength": 0.6
+  }
  },
  "bodies/uranus_rings": {
   "files": [
@@ -791,7 +827,12 @@
   ],
   "px_per_unit": 2,
   "note": "Cream cloud deck with a sideways V of darker and paler streaks",
-  "disc_radius_px": 192
+  "disc_radius_px": 192,
+  "atmosphere": {
+   "day_tint": "#FFF0C8",
+   "twilight_tint": "#FFC878",
+   "strength": 1.0
+  }
  },
  "comets/coma": {
   "files": [
@@ -2194,5 +2235,37 @@
   ],
   "px_per_unit": 3,
   "note": "Propellant tanker seen from above, nose right"
+ },
+ "effects/atmo_day": {
+  "files": [
+   "atmo_day.png"
+  ],
+  "size": [
+   460,
+   460
+  ],
+  "pivot": [
+   230.0,
+   230.0
+  ],
+  "px_per_unit": 2,
+  "disc_radius_px": 192,
+  "note": "Atmosphere haze for any body with an atmosphere: faint over the sunlit half of the disc, brighter toward the limb, and a soft glow just above the limb on the day side. White, strength in alpha: draw additively over the body, tinted with modulate = atmosphere.day_tint, with its alpha set to atmosphere.strength. Drawn with the Sun to the right: place it on the body with the same scale (radius_px / 192) and rotate it to point at the Sun, independent of the body's own rotation or tilt"
+ },
+ "effects/atmo_twilight": {
+  "files": [
+   "atmo_twilight.png"
+  ],
+  "size": [
+   460,
+   460
+  ],
+  "pivot": [
+   230.0,
+   230.0
+  ],
+  "px_per_unit": 2,
+  "disc_radius_px": 192,
+  "note": "Twilight glow along the day/night terminator, strongest where the terminator meets the limb and sitting just on the night side. White, strength in alpha: draw additively over the body and atmo_day, tinted with modulate = atmosphere.twilight_tint, with its alpha set to atmosphere.strength. Same placement and rotation as atmo_day"
  }
 }

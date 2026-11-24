@@ -1,8 +1,8 @@
 # Asteroid Miner sprites
 
-141 sprites (228 PNG files) made from the approved sample canvas, plus new sprites for the Sun, all eight planets, Ceres and 20 moons.
+143 sprites (231 PNG files) made from the approved sample canvas, plus new sprites for the Sun, all eight planets, Ceres and 20 moons, and the step 11 additions: Earth's city lights and the atmosphere halo.
 
-`overview.png` shows every sprite. The ships, asteroids and bodies in it are shown lit by their normal maps, the way the shader will light them.
+`overview.png` shows every sprite from the first package. `overview_step11.png` shows the step 11 additions on Earth and Mars, lit as the game should light them. The ships, asteroids and bodies in it are shown lit by their normal maps, the way the shader will light them.
 
 ## Installing
 
@@ -16,7 +16,7 @@ For the Android export, PNG files are packed automatically. `sprites.json` is on
 | --- | --- |
 | `name.png` | The sprite in flat colours, with no light or shadow baked in. |
 | `name_n.png` | Normal map for the lighting shader. Only for sprites that have relief. |
-| `name_glow.png` | Parts that give off their own light (windows, the tanker's red light). Draw it unlit, on top, same position. |
+| `name_glow.png` | Parts that give off their own light (windows, the tanker's red light). Draw it unlit, on top, same position. On Earth it holds the city lights, which are shown only on the night side (see `bodies/`). |
 
 `sprites/sprites.json` lists every sprite with its files, its size in pixels, its pivot in pixels and its scale.
 
@@ -35,6 +35,25 @@ For the Android export, PNG files are packed automatically. `sprites.json` is on
 - **Planets and moons:** set `sun_elevation` to 0. That gives a half-lit disc whose dark side faces away from the sun.
 - **Reflected light:** `fill_dir` and `fill_strength` add a weak second light, for example from the Moon's bright side.
 - **Atmospheric heating:** `heat` (0 to 1) and `heat_dir` (direction of travel) add the orange glow on surfaces facing the flow.
+- **City lights:** `shaders/city_lights.gdshader` shows `earth_glow.png` only on the night side. Put the lights on their own Sprite2D, placed exactly like the earth sprite, and give its material the same normal map and the same `sun_dir` and `sun_elevation` as the earth sprite's `sprite_lit` material. The lights then switch on where the earth sprite turns dark: they start just before the terminator, are at full strength a little way into the night side, and are hidden on the day side. They are added on top, unlit. `fade_start`, `fade_full` and `strength` tune where they fade in and how bright they are. For example:
+
+  ```gdscript
+  # Once, when the earth sprite is set up (after the snow overlay, so the lights draw on top of it):
+  var lights := Sprite2D.new()
+  lights.texture = load("res://sprites/bodies/earth_glow.png")
+  lights.centered = false
+  lights.offset = -Vector2(195, 195)           # same pivot as earth.png
+  var mat := ShaderMaterial.new()
+  mat.shader = load("res://shaders/city_lights.gdshader")
+  mat.set_shader_parameter("normal_map", load("res://sprites/bodies/earth_n.png"))
+  lights.material = mat
+  earth_sprite.add_child(lights)               # follows the earth sprite's position, scale and fade
+
+  # Every frame, with the same value given to the earth sprite's own material:
+  mat.set_shader_parameter("sun_dir", to_sun_local)
+  ```
+
+  Draw order on Earth: `earth`, `earth_snow`, the city lights, `atmo_day`, `atmo_twilight`.
 - **Mirrored sprites:** flipping a sprite with a negative scale also flips its lighting. Mirror `sun_dir` on that axis to compensate.
 
 ## Folders
@@ -75,6 +94,8 @@ The Sun, the eight planets, Ceres, and the Moon, Phobos and Deimos. The other 17
 - **Earth's seasons:** `earth` is the northern summer state, with a small, soft-edged ice cap. `earth_snow` is a winter overlay with snow on the northern continents and a larger ice cap. Draw it over `earth` with the same position, scale, rotation and lighting, and set its opacity from the season: `snow = 0.5 - 0.5 * dot(direction_to_sun, tilt_direction)`, where `tilt_direction` is the way the north pole leans (the top of the sprite). That gives 0 when the pole leans toward the sun and 1 when it leans away. Real snow cover lags the sun by a month or so; delay the value if you want that.
 - **Rings:** `saturn_rings` and `uranus_rings` are separate sprites. Draw them at the same position and scale as the planet, unlit. Saturn's rings clear the disc, so order does not matter. Draw Uranus's rings over the planet; the part behind it is already cut away.
 - **Moons:** drawn without tilt, as they are tiny on screen.
+- **City lights:** `earth_glow.png` has the same size and pivot as `earth.png`. It is warm light clusters at real locations in the Americas, Africa, Europe, the Middle East and India. East Asia lies past the edge of this fixed view and is left dark. Show it only on the night side with `shaders/city_lights.gdshader`, as described under Lighting.
+- **Atmosphere:** bodies with an atmosphere have an `atmosphere` entry in `sprites.json` with `day_tint`, `twilight_tint` and `strength`. Draw `effects/atmo_day` and then `effects/atmo_twilight` over the body (and over the city lights), as described under `effects/`. The tints are starting values to tune: Earth blue with orange twilight, Mars butterscotch with blue twilight (Martian sunsets are blue), and Venus, Titan and the four giant planets with their own colours.
 
 ### `effects/`
 - **Flames:** `flame_vacuum`, `flame_atmosphere` and `flame_white`, pivot at the engine bell exit. Cross-fade between them with altitude as in the design document. The atmosphere flame is also stretched 1.5 times in length low down.
@@ -82,6 +103,7 @@ The Sun, the eight planets, Ceres, and the Moon, Phobos and Deimos. The other 17
 - **Burn-up:** `fireball`, eight `fragments/fragment_*` and `fragments/fragment_flame` (drawn over a fragment).
 - **Generic:** `glow_white` and `puff_white` are white so they can be tinted. Use them for flashes, sparks, dust, smoke and tyre smoke.
 - **Landing:** `dust_sheet`, `splash_spray` and `ripple_ring`.
+- **Atmosphere halo:** `atmo_day` (haze over the sunlit half, brightening toward the limb, plus a soft glow just above the day-side limb) and `atmo_twilight` (a glow along the day/night terminator, strongest where it meets the limb). Both are white with the strength in alpha, 460 x 460 px with the pivot in the middle and the same 192 px disc radius as the bodies. For each body with an `atmosphere` entry, draw both at the body's position and scale, with a `CanvasItemMaterial` set to additive blending, `modulate` set to the tint and `modulate.a` set to `strength`. They are drawn with the Sun to the right: set their rotation to the direction of the Sun on screen. They do not turn with the body or its tilt, because seen from above the terminator is always a straight line through the centre.
 
 ### `scenery/`
 Layers for the side-view landing scenes: `sky/`, `background/`, `props/`, `buildings/` and `ground/`. Backgrounds, ground tiles and the runway repeat seamlessly every 800 units (1600 px). The Moon ground is a fixed 640-unit piece. Pivots are at the bottom left, on the horizon or ground line.

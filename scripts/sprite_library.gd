@@ -7,6 +7,7 @@ extends RefCounted
 
 const ROOTS: Array = ["res://sprites/", "res://asteroid-miner-sprites/sprites/"]
 const SHADERS: Array = ["res://shaders/sprite_lit.gdshader", "res://asteroid-miner-sprites/shaders/sprite_lit.gdshader"]
+const NIGHT_SHADERS: Array = ["res://shaders/city_lights.gdshader", "res://asteroid-miner-sprites/shaders/city_lights.gdshader"]
 const DISC_RADIUS_PX := 192.0   # every round body in the pack has a disc of this radius
 
 static var _ready_once := false
@@ -14,6 +15,7 @@ static var _root := ""
 static var _manifest: Dictionary = {}
 static var _entries: Dictionary = {}   # key -> {texture, normal, glow, pivot}
 static var _shader: Shader = null
+static var _night_shader: Shader = null
 
 
 static func _setup() -> void:
@@ -35,6 +37,10 @@ static func _setup() -> void:
 	for path: String in SHADERS:
 		if ResourceLoader.exists(path):
 			_shader = load(path) as Shader
+			break
+	for path: String in NIGHT_SHADERS:
+		if ResourceLoader.exists(path):
+			_night_shader = load(path) as Shader
 			break
 
 
@@ -90,4 +96,16 @@ static func lit_material(normal: Texture2D) -> ShaderMaterial:
 	material.shader = _shader
 	material.set_shader_parameter("normal_map", normal)
 	material.set_shader_parameter("sun_elevation", 0.0)
+	return material
+
+
+## A new material for the night-side lights of a body (its *_glow.png layer): shows the layer only where the body's
+## own normal map says the Sun does not light it (null when the shader is missing).
+static func night_material(normal: Texture2D) -> ShaderMaterial:
+	_setup()
+	if _night_shader == null or normal == null:
+		return null
+	var material := ShaderMaterial.new()
+	material.shader = _night_shader
+	material.set_shader_parameter("normal_map", normal)
 	return material

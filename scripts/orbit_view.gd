@@ -25,6 +25,10 @@ const SHIP_VELOCITY_STEP_DAYS := 60.0 / 86400.0
 const RING_RADIUS_PX := 10.0
 const RING_BELOW_PX := 2.0         # a body whose true radius is smaller than this many pixels gets a ring around it
 const ORBIT_SAMPLES := 160
+# Orbit lines fade in with the size of the view of their body on the screen (radius of the view in pixels, zooming
+# out) and out when the view is many times bigger than the screen (in half-screens, zooming in). 10bk: 16-60 px and 1.6-5.
+const LINE_FADE_SMALL_PX := Vector2(13.0, 48.0)
+const LINE_FADE_BIG_HALF_SCREENS := Vector2(8.0, 25.0)
 const MOBILE_UI_SCALE := 2.0
 const ZOOM_SECONDS := 0.7          # a change of the view is a zoom of this many (real) seconds
 const DOUBLE_TAP_MS := 400         # two taps on the same body within this time focus the view on it
@@ -438,7 +442,7 @@ func _focus_body(id: String) -> void:
 
 ## Pixels per km of the view of a body: its widest orbit fits the screen.
 func _fit_scale(frame_id: String) -> float:
-	var half_extent := minf(size.x * 0.5, size.y * 0.38)
+	var half_extent := _half_screen()
 	return half_extent * GameState.VIEW_FILL / GameState.view_extent_km(frame_id, time_jd)
 
 
@@ -1371,7 +1375,7 @@ func _draw_map() -> void:
 	if cam_body == "":
 		return
 	var centre := _view_centre()
-	var half_extent := minf(size.x * 0.5, size.y * 0.38)
+	var half_extent := _half_screen()
 	# The scenes of the camera's body, of the body it orbits and of its children are drawn together; each fades
 	# in when its view gets big enough to see and its orbit lines fade out when it is far bigger than the screen.
 	var scene_ids: Array = []
@@ -1388,9 +1392,8 @@ func _draw_map() -> void:
 	for n in scene_ids.size():
 		var id := str(scene_ids[n])
 		var radius_px := GameState.view_radius_km(id, time_jd) * cam_scale
-		var visible_enough := smoothstep(16.0, 60.0, radius_px)
-		var too_big := 1.0 - smoothstep(1.6 * half_extent, 5.0 * half_extent, radius_px)
-		scene_alphas.append([visible_enough * too_big, visible_enough])
+		var visible_enough := smoothstep(LINE_FADE_SMALL_PX.x, LINE_FADE_SMALL_PX.y, radius_px)
+		scene_alphas.append([visible_enough * _too_big_fade(radius_px, half_extent), visible_enough])
 		if visible_enough > 0.01:
 			var rank := 0 if id == cam_body else 1
 			for body_id: String in [id] + (children[id] as Array):
@@ -1452,6 +1455,16 @@ func _draw_map() -> void:
 	draw_string(ThemeDB.fallback_font, p + Vector2(10, 22), GameState.ship_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color.WHITE)
 
 
+## More points for a line that is much bigger than the screen, so that its corners do not show.
+func _sample_count(radius_px: float, half_extent: float, base: int) -> int:
+	return clampi(int(float(base) * maxf(1.0, radius_px / (2.0 * half_extent))), base, 2048)
+
+
+## The orbit lines of a scene fade out when its view is far bigger than the screen (the same for every line).
+func _too_big_fade(radius_px: float, half_extent: float) -> float:
+	return 1.0 - smoothstep(LINE_FADE_BIG_HALF_SCREENS.x * half_extent, LINE_FADE_BIG_HALF_SCREENS.y * half_extent, radius_px)
+
+
 ## The orbit the ship is in (green); while a burn or an aerobraking pass changes it, the orbit morphs. It is always
 ## drawn, whatever the scene it belongs to shows, unless it is so small that it cannot be told from the body, or so
 ## much bigger than the screen that a line through its points would be wrong.
@@ -1463,15 +1476,22 @@ func _draw_ship_orbit(half_extent: float) -> void:
 	if not morph.is_empty():
 		parent_id = str(morph["parent"])
 		segment = morph["segment"]
+	# On the way inside the local view of another body, the blue route of that view is the ship's course (and the
+	# ship is drawn on it), so the orbit of the transfer leg is not drawn as a second line.
+	var context := GameState.ship_context_id
+	if str(leg["kind"]) == "transfer" and context != "" and context != parent_id:
+		return
 	var apoapsis := float(segment["semi_major_axis_km"]) * (1.0 + float(segment["eccentricity"]))
 	var above_body_px := (apoapsis - float(bodies[parent_id]["radius_km"])) * cam_scale
-	if above_body_px * 1.0 < 2.0 or apoapsis * cam_scale > 8.0 * half_extent:
+	if above_body_px * 1.0 < 2.0 or apoapsis * cam_scale > LINE_FADE_BIG_HALF_SCREENS.y * half_extent:
 		return
 	var origin := _screen_of(parent_id)
 	var ring := PackedVector2Array()
-	for point in Kepler.orbit_points(segment, 128):
+	for point in Kepler.orbit_points(segment, _sample_count(apoapsis * cam_scale, half_extent, 128)):
 		ring.append(_to_screen(point, origin, cam_scale))
-	draw_polyline(ring, Color(0.3, 1.0, 0.4, 0.85 * smoothstep(2.0, 6.0, above_body_px)), 1.5, true)
+	# It fades out with the same zoom rule as the blue lines (the size of the view of the body it orbits).
+	var zoom_fade := _too_big_fade(GameState.view_radius_km(parent_id, time_jd) * cam_scale, half_extent)
+	draw_polyline(ring, Color(0.3, 1.0, 0.4, 0.85 * smoothstep(2.0, 6.0, above_body_px) * zoom_fade), 1.5, true)
 
 
 ## The faded colour of an orbit line, and of a marker (a body, its name).
@@ -1490,7 +1510,7 @@ func _draw_scene(frame_id: String, centre: Vector2, px_per_km: float) -> void:
 	for kid_id in kid_ids:
 		var segment := Kepler.segment_at(bodies[kid_id]["orbit_segments"], time_jd)
 		var line := PackedVector2Array()
-		for point in Kepler.orbit_points(segment, ORBIT_SAMPLES):
+		for point in Kepler.orbit_points(segment, _sample_count(float(segment["semi_major_axis_km"]) * px_per_km, _half_screen(), ORBIT_SAMPLES)):
 			line.append(_to_screen(point, centre, px_per_km))
 		draw_polyline(line, _fade(Color(1, 1, 1, 0.25)), 1.0, true)
 
@@ -1530,7 +1550,7 @@ func _draw_local_route(frame_id: String, centre: Vector2, px_per_km: float) -> v
 		if str(capture_leg["parent"]) != frame_id:
 			continue
 		var ring := PackedVector2Array()
-		for point in Kepler.orbit_points(capture_leg["segment"], 64):
+		for point in Kepler.orbit_points(capture_leg["segment"], _sample_count(float(capture_leg["segment"]["semi_major_axis_km"]) * px_per_km, _half_screen(), 64)):
 			ring.append(_to_screen(point, centre, px_per_km))
 		draw_polyline(ring, _fade(Color(0.4, 0.9, 1.0, 0.7 if capture_leg["kind"] == "orbit" else 0.3)), 1.0, true)
 
@@ -1554,6 +1574,11 @@ func _route_points(leg: Dictionary, frame_id: String, t_origin: float, direction
 			break
 		step_seconds *= 1.12
 	return points
+
+
+## Half the size of the part of the screen the map uses.
+func _half_screen() -> float:
+	return minf(size.x * 0.5, size.y * 0.38)
 
 
 func _to_screen(position_km: Vector2, centre: Vector2, px_per_km: float) -> Vector2:
@@ -1604,13 +1629,17 @@ func _place_body_sprites(id: String, screen_position: Vector2, true_radius_px: f
 		# Northern winter: snow fades in when the north pole (the top of the sprite) leans away from the Sun.
 		var snow := clampf(0.5 - 0.5 * sun_dir.dot(Vector2.UP), 0.0, 1.0)
 		_request_sprite("bodies/earth_snow", "bodies/earth_snow", screen_position, sprite_scale, sun_dir, alpha * snow, true)
+	# Lights on the night side (city lights): any body with a *_glow.png layer (Earth so far).
+	var glow_key := key + "_glow"
+	if not SpriteLibrary.entry(glow_key).is_empty() and not (SpriteLibrary.entry(key).get("normal") == null):
+		_request_sprite(glow_key, glow_key, screen_position, sprite_scale, sun_dir, alpha, true, key)
 	for ring_key in ["bodies/%s_rings" % id]:
 		if not SpriteLibrary.entry(ring_key).is_empty():
 			_request_sprite(ring_key, ring_key, screen_position, sprite_scale, sun_dir, alpha, false)
 	return alpha / maxf(marker_alpha, 0.0001)
 
 
-func _request_sprite(node_key: String, sprite_key: String, screen_position: Vector2, sprite_scale: float, sun_dir: Vector2, alpha: float, lit: bool) -> void:
+func _request_sprite(node_key: String, sprite_key: String, screen_position: Vector2, sprite_scale: float, sun_dir: Vector2, alpha: float, lit: bool, night_of := "") -> void:
 	if sprite_requests.has(node_key):
 		# The same body drawn by two scenes at once: the camera body's own scene has exact positions (the others are
 		# millions of pixels away and jitter in 32-bit floats), so its position wins; the opacity is the larger one.
@@ -1619,7 +1648,7 @@ func _request_sprite(node_key: String, sprite_key: String, screen_position: Vect
 		if int(earlier["rank"]) < scene_rank:
 			earlier["alpha"] = alpha
 			return
-	sprite_requests[node_key] = {"sprite": sprite_key, "pos": screen_position, "scale": sprite_scale, "sun": sun_dir, "alpha": alpha, "lit": lit, "rank": scene_rank}
+	sprite_requests[node_key] = {"sprite": sprite_key, "pos": screen_position, "scale": sprite_scale, "sun": sun_dir, "alpha": alpha, "lit": lit, "rank": scene_rank, "night_of": night_of}
 
 
 ## Shows the requested sprites (creating the nodes the first time) and hides the rest.
@@ -1640,16 +1669,24 @@ func _apply_sprites() -> void:
 			node.texture = info["texture"]
 			node.offset = -(info["pivot"] as Vector2)
 			node.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR_WITH_MIPMAPS
-			var material := SpriteLibrary.lit_material(info["normal"] as Texture2D)
+			var night_of := str(request.get("night_of", ""))
+			var material: ShaderMaterial = null
+			if night_of != "":
+				material = SpriteLibrary.night_material(SpriteLibrary.entry(night_of).get("normal") as Texture2D)   # (the lights of a body, lit by its normal map)
+			else:
+				material = SpriteLibrary.lit_material(info["normal"] as Texture2D)
 			if material != null:
 				node.set_meta("lit_material", material)
 			sprite_layer.add_child(node)
 			sprite_nodes[node_key] = node
+		var lit_material: ShaderMaterial = node.get_meta("lit_material", null)
+		if str(request.get("night_of", "")) != "" and lit_material == null:
+			node.visible = false   # (no shader or normal map: the lights would show all round, so they are left out)
+			continue
 		node.visible = true
 		node.position = request["pos"]
 		node.scale = Vector2.ONE * float(request["scale"])
 		node.modulate = Color(1, 1, 1, float(request["alpha"]))
-		var lit_material: ShaderMaterial = node.get_meta("lit_material", null)
 		if bool(request["lit"]) and lit_material != null:
 			node.material = lit_material
 			lit_material.set_shader_parameter("sun_dir", request["sun"])

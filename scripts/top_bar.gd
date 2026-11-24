@@ -18,6 +18,7 @@ const SCREENS := [
 const MAX_HEIGHT_PORTRAIT := 0.45   # share of the screen height the bar may use before it scrolls
 const MAX_HEIGHT_LANDSCAPE := 0.45
 const WHEEL_STEP_PX := 48
+const STATUS_ITEM_GAP := 10   # space between the items of the text list (about half a line)
 
 var scroll: ScrollContainer
 var box: VBoxContainer
@@ -42,6 +43,7 @@ func setup(current_scene: String, view_text: String) -> void:
 	scroll.gui_input.connect(_on_scroll_input)
 	box = VBoxContainer.new()
 	box.size_flags_horizontal = Control.SIZE_EXPAND_FILL
+	box.add_theme_constant_override("separation", STATUS_ITEM_GAP)
 	scroll.add_child(box)
 
 	var row := HFlowContainer.new()

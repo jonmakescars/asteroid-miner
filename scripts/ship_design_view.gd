@@ -39,6 +39,10 @@ var shield_area_m2 := 0.0
 var shield_mass_kg := 0.0
 var start_stages: Array = []     # starting values of the sliders (defaults, or the last saved design)
 var result_label: Label
+var scroll_box: ScrollContainer      # the scrolled screen
+var margin_box: MarginContainer      # its margin; the bottom margin grows by the height of the on-screen keyboard
+var keyboard_pad := -1               # the keyboard height (in screen units) that the bottom margin was made for
+var last_focus: Control = null
 
 
 func _ready() -> void:
@@ -91,10 +95,12 @@ func _apply_saved_design() -> void:
 
 func _build_ui() -> void:
 	var scroll := ScrollContainer.new()
+	scroll_box = scroll
 	scroll.set_anchors_preset(Control.PRESET_FULL_RECT)
 	scroll.horizontal_scroll_mode = ScrollContainer.SCROLL_MODE_DISABLED
 	add_child(scroll)
 	var margin := MarginContainer.new()
+	margin_box = margin
 	margin.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	for side in ["left", "top", "right", "bottom"]:
 		margin.add_theme_constant_override("margin_" + side, 16)
@@ -118,11 +124,12 @@ func _build_ui() -> void:
 	box.add_child(name_row)
 	var name_label := Label.new()
 	name_label.text = "Ship name"
+	name_label.custom_minimum_size = Vector2(60, 0)
 	name_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	name_row.add_child(name_label)
 	var name_edit := LineEdit.new()
 	name_edit.text = ship_name
-	name_edit.custom_minimum_size = Vector2(260, 0)
+	name_edit.custom_minimum_size = Vector2(180, 0)
 	name_edit.max_length = 40
 	name_edit.text_changed.connect(func(text: String) -> void:
 		ship_name = text
@@ -150,6 +157,9 @@ func _build_ui() -> void:
 
 	_add_heading(box, "Result")
 	result_label = Label.new()
+	result_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART   # long lines wrap instead of making the screen wider than a portrait phone
+	result_label.custom_minimum_size = Vector2(100, 0)
+	result_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	box.add_child(result_label)
 
 
@@ -158,6 +168,8 @@ func _add_heading(parent: Control, text: String) -> void:
 	label.text = text
 	label.add_theme_font_size_override("font_size", 22)
 	label.add_theme_color_override("font_color", Color(0.6, 0.8, 1.0))
+	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	label.custom_minimum_size = Vector2(100, 0)
 	parent.add_child(Control.new())  # small spacer
 	parent.add_child(label)
 
@@ -169,10 +181,12 @@ func _add_slider(parent: Control, title: String, value_range: Vector2, logarithm
 	parent.add_child(row)
 	var title_label := Label.new()
 	title_label.text = title
+	title_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART   # a long title wraps (portrait is narrow)
+	title_label.custom_minimum_size = Vector2(70, 0)
 	title_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	row.add_child(title_label)
 	var edit := LineEdit.new()
-	edit.custom_minimum_size = Vector2(150, 0)
+	edit.custom_minimum_size = Vector2(110, 0)
 	edit.alignment = HORIZONTAL_ALIGNMENT_RIGHT
 	edit.select_all_on_focus = true
 	edit.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER_DECIMAL
@@ -298,6 +312,30 @@ func _refresh() -> void:
 
 func _update_label(control: Dictionary) -> void:
 	(control["edit"] as LineEdit).text = String.num(_value_of(control), 2)
+
+
+## The on-screen keyboard (phones) covers the lower part of the screen: the bottom margin grows by its height so the
+## scrolled screen can move the edited text box above it, and the box in focus is scrolled into view (B-012).
+func _process(_delta: float) -> void:
+	if scroll_box == null:
+		return
+	var keyboard := int(ceil(float(DisplayServer.virtual_keyboard_get_height()) / maxf(get_window().content_scale_factor, 0.1)))
+	var focused := get_viewport().gui_get_focus_owner()
+	var edit_focus: Control = focused if focused is LineEdit else null
+	if keyboard != keyboard_pad:
+		keyboard_pad = keyboard
+		margin_box.add_theme_constant_override("margin_bottom", 16 + keyboard)
+		last_focus = null   # scroll to the box again with the new margin
+	if edit_focus != last_focus:
+		last_focus = edit_focus
+		if edit_focus != null:
+			_show_focused.call_deferred(edit_focus)
+
+
+func _show_focused(control: Control) -> void:
+	await get_tree().process_frame   # the new margin has to be laid out first
+	if is_instance_valid(control) and control.is_inside_tree():
+		scroll_box.ensure_control_visible(control)
 
 
 ## A click outside the focused text box ends the editing, which applies the typed value.

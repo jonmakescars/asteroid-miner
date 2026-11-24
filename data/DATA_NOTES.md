@@ -534,3 +534,39 @@ No code change beyond the build label ("version 0.1 - Step 10 aq"). This zip hol
 - Cause: `soi_radius_km` gives Deimos a sphere of influence of 8.1 km (radius 6.2 km; Phobos: 7.2 km, below its radius 11.1 km so it counted as none). `max_orbit_radius_km` therefore gave Deimos a context limit of 2 radii = 12.4 km and `max_orbit_altitude_km` 6.2 km, so an orbit at 20 km altitude was outside its own context. Phobos was fine only because its sphere of influence is smaller than the body.
 - Now a body whose sphere of influence is smaller than `TINY_SOI_RADII` (5) body radii counts as having none, like Phobos: `max_orbit_radius_km` = 101 radii, `max_orbit_altitude_km` = 100 radii (Deimos: about 620 km). Moon (38 radii), Ceres (164) and the planets are unchanged.
 - Build label: "version 0.1 - Step 10 bi".
+
+## Step 10bj: ship design screen in portrait and with the on-screen keyboard (B-012)
+
+- Not run on a phone (cannot be tested here): the layout has to be tried on the Fairphone in portrait.
+- The content scale on phones is 2.5, so a portrait screen is only about 430 units wide. The screen did not wrap anything: the long lines of the result text ("Warning: acceleration above ...", "For comparison ...") and the titles of the sliders gave the scrolled column a minimum width wider than the screen. Now the result text, the headings and the slider titles wrap (`AUTOWRAP_WORD_SMART`, minimum width 70-100 units), the text boxes are narrower (110 units, the name 180).
+- The on-screen keyboard: `_process` reads `DisplayServer.virtual_keyboard_get_height()` (screen pixels, divided by the content scale) and adds it to the bottom margin of the scrolled screen, and `ScrollContainer.ensure_control_visible` scrolls the text box in focus into view when it gets the focus or when the keyboard appears.
+- The start menu was not changed: it is a centred column of fixed-width buttons (320 units), which fits a portrait phone at scale 2.0 (about 540 units wide).
+- Build label: "version 0.1 - Step 10 bj".
+
+## Step 10bk: line fade (B-030), one course line near a moon (B-035 part), spacing of the text list
+
+- Not run (no Godot here): to be tried by Jon.
+- The green ship orbit now fades with the same zoom rule as the blue lines (`OrbitView._too_big_fade`, the size of the view of the body it orbits against the screen: 1.6 to 5 half-screens), next to its own fade at the tiny end (2 to 6 px above the body). `_draw_map` uses the same function for the scenes.
+- While a transfer leg is flown inside the context of another body (`GameState.ship_context_id` differs from the parent of the leg: approaching or leaving the Moon, Phobos ...), the green orbit of the leg is not drawn: the blue route of that body's view is the ship's course and the ship is drawn on it (it follows `leg_rel_with_offsets`), so there are no longer two lines that disagree.
+- `TopBar.STATUS_ITEM_GAP` (10 units, about half a line) is the spacing between the items of the text list (VBox separation of the bar's box).
+- Not changed: the departure from a moon or a moon system to a planet is still not tangential (B-008 second part, B-035): 0.2.
+- Build label: "version 0.1 - Step 10 bk".
+
+## Step 10bl: fade distances of the orbit lines (B-030, second part)
+
+- Not run (no Godot here): to be tried by Jon.
+- Seen in 10bk (Jon): green and blue lines now fade together, but too soon: at 4000 km altitude round Earth they began to fade when Earth was about 1/10 of the screen width (should be about 1/2); zooming out they should fade about 20% later.
+- The code that was meant to give the scene lines the shared `_too_big_fade` had not been applied in 10bk (the scene loop still had its own copy of the formula with the same numbers, so it behaved the same); both now use `_too_big_fade`.
+- New constants in `orbit_view.gd`: `LINE_FADE_BIG_HALF_SCREENS` = (8, 25) half-screens (was 1.6 and 5: five times later when zooming in) and `LINE_FADE_SMALL_PX` = (13, 48) px (was 16 and 60: 20% smaller views keep their lines when zooming out).
+- Because the lines now stay until they are up to 25 half-screens big, the green orbit is hidden only beyond 25 half-screens (was 8), and long lines get more points (`_sample_count`: the base count times the line's size in screens, at most 2048) so that no corners show: green orbit (128), the orbits of the moons (160), the capture rings (64).
+- `_half_screen()` returns the half size of the map area (used by `_fit_scale` and `_draw_map`).
+- Build label: "version 0.1 - Step 10 bl".
+
+## Step 11a: city lights on the night side (shader support)
+
+- Not run (no Godot here): to be tried by Jon. The art (`earth_glow.png`, same size as `earth.png`, in the sprite pack next to `earth.png` and `earth_n.png`) is not in the repository I can see (the last version there has no `earth_glow.png`), so it has to be in `asteroid-miner-sprites/sprites/bodies/` for the lights to show. Without it nothing changes.
+- New shader `asteroid-miner-sprites/shaders/city_lights.gdshader` (copy it into the project with the zip): additive (`blend_add`) layer that shows the glow texture only where the Sun does not light the body. The lit side is worked out like in `sprite_lit.gdshader` for a planet (`sun_elevation` 0) from the body's own normal map and `sun_dir`, so the lights fade out where the daylight fades in (smoothstep from 0.04 to -0.30 of the lit value; `strength` scales the brightness).
+- `SpriteLibrary.night_material(normal)` makes the material (null when the shader or the normal map is missing; then the lights are not shown at all, instead of showing all round).
+- `OrbitView._place_body_sprites` asks for the layer of any body that has a `<key>_glow.png` (so far only Earth): drawn above the body and its snow, lit by the body's normal map, with the body's opacity. `_request_sprite` has a new `night_of` parameter (the key of the body whose normal map is used) and `_apply_sprites` creates the night material for such a node.
+- The menu now shows only the build name: "Alpha v0.1.11.a Testing" (the word "Prototype, " in front is gone). Names from now on: Alpha v0.1.[step].[sub-step] Testing.
+- Not done in this build: the atmospheric halo (11b).
