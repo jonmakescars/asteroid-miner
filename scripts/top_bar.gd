@@ -12,6 +12,7 @@ signal view_pressed
 const SCREENS := [
 	["Map", "res://main.tscn"],
 	["Ship design", "res://ship_design.tscn"],
+	["Settings", "res://settings.tscn"],
 	["Menu", "res://menu.tscn"],
 ]
 
@@ -57,7 +58,10 @@ func setup(current_scene: String, view_text: String) -> void:
 	for screen in SCREENS:
 		var path: String = screen[1]
 		if path != current_scene:
-			var button := _add_button(row, screen[0], func() -> void: navigate.emit(path))
+			var button := _add_button(row, screen[0], func() -> void:
+				if path == "res://settings.tscn":
+					UserSettings.settings_return = current_scene   # (the Back button of Settings then returns here)
+				navigate.emit(path))
 			if path == "res://ship_design.tscn":
 				design_button = button
 				button.visible = false

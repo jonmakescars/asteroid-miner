@@ -680,3 +680,14 @@ No code change beyond the build label ("version 0.1 - Step 10 aq"). This zip hol
 ## Step 12g2: B-038 rounding
 
 - Not run (no Godot here). Jon on 12g: the periapsis came out at 158.2 km and still gave the decay warning ("below 158 km"), because the upper limit of the atmosphere is 158.17 km. Now `OrbitView._orbit_for_body` raises the periapsis to `ceil(limit) + 1` km (Earth: 160 km), so it is clearly above the limit. Build label: "Alpha v0.1.12.g2 Testing".
+
+## Step 12h: Settings button on the orbital map
+
+- Not run (no Godot here). B-038 was tested OK in 12g2 (Jon, 24 Nov). Build label: "Alpha v0.1.12.h Testing".
+- `TopBar.SCREENS` has a new entry "Settings" (between Ship design and Menu), so the top bar of the orbit map (the only screen using `TopBar`) has a Settings button. It opens `settings.tscn` through the same `navigate` signal as the other buttons (`OrbitView._goto`, which also remembers the selected target).
+- Back from Settings: new `UserSettings.settings_return` (default `res://menu.tscn`). The Settings button of the top bar sets it to the screen the bar is on (the orbit map); `SettingsView._on_back` goes there and resets it to the menu; the menu's `_ready` sets it to the menu too. So Back from Settings returns to the orbit map when opened from there, and to the menu when opened from the menu.
+- Note: the orbit map is reloaded when Back is pressed (it starts again as when opened from the menu; the game state in `GameState` is kept as for the other buttons).
+
+## Alpha v0.1 Stable
+
+- Not run (no Godot here). The code is the same as step 12h (tested OK by Jon on 24 Nov); only the build label changes: "Alpha v0.1 Stable". All 0.1 steps (to 12h) are built and tested; the 0.1 bugs that are not fixed (B-008, B-009, B-010, B-013, B-033, B-035) and B-036, B-037 are planned for 0.2.

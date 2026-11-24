@@ -39,6 +39,7 @@ static var _palette := {
 	"course": [Color(0.4, 0.9, 1.0), Color(0.34, 0.71, 0.91)],
 }
 
+static var settings_return := "res://menu.tscn"   # the screen the Back button of the Settings screen goes to
 static var _values: Dictionary = {}
 static var _loaded := false
 static var _listeners: Array = []

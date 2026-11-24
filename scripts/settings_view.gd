@@ -95,8 +95,15 @@ func _ready() -> void:
 	var back_button := Button.new()
 	back_button.text = "Back"
 	back_button.custom_minimum_size = Vector2(160, 48)
-	back_button.pressed.connect(func() -> void: get_tree().change_scene_to_file(MENU_SCENE))
+	back_button.pressed.connect(_on_back)
 	buttons.add_child(back_button)
+
+
+## Back: to the screen Settings was opened from (the orbit map or the menu).
+func _on_back() -> void:
+	var target := UserSettings.settings_return
+	UserSettings.settings_return = MENU_SCENE
+	get_tree().change_scene_to_file(target)
 
 
 func _exit_tree() -> void:

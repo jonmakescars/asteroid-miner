@@ -2,7 +2,8 @@ extends Control
 ## Start menu: opens the prototype screens.
 
 const MOBILE_UI_SCALE := 2.0
-const BUILD_LABEL := "Alpha v0.1.12.g2 Testing"   # shown in the menu; update it with every new build
+const BUILD_LABEL := "Alpha v0.1 Stable"   # shown in the menu; update it with every new build
+const MENU_SCENE_PATH := "res://menu.tscn"
 const ENTRIES := [
 	["Orbit map", "res://main.tscn"],
 	["Ship design", "res://ship_design.tscn"],
@@ -17,6 +18,7 @@ func _ready() -> void:
 	RenderingServer.set_default_clear_color(Color(0.02, 0.02, 0.05))
 	UserSettings.apply_text_scale(self)
 	UserSettings.apply_display()
+	UserSettings.settings_return = MENU_SCENE_PATH
 	var centre := CenterContainer.new()
 	centre.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(centre)
