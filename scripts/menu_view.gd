@@ -2,7 +2,7 @@ extends Control
 ## Start menu: opens the prototype screens.
 
 const MOBILE_UI_SCALE := 2.0
-const BUILD_LABEL := "Alpha v0.1 Stable"   # shown in the menu; update it with every new build
+const BUILD_LABEL := "Alpha v0.2.5 Testing"   # shown in the menu; update it with every new build
 const MENU_SCENE_PATH := "res://menu.tscn"
 const ENTRIES := [
 	["Orbit map", "res://main.tscn"],

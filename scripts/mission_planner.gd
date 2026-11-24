@@ -7,6 +7,8 @@ extends RefCounted
 const SYNODIC_SEARCH_DAYS := 2000.0   # search period for windows between planets
 const MAX_ORBIT_SEARCH_PERIODS := 40.0   # never search longer than this many orbits of the ship
 const ORBIT_SEARCH_PERIODS := 1.5     # for a ship in orbit around the origin: how many orbits to search
+const MOON_WINDOW_STEPS := 48         # departure times tried over one orbit of a moon when it leaves for a planet (B-035)
+const MOON_ESCAPE_CLEARANCE_KM := 300.0   # an escape orbit from a moon has to pass the planet at least this far above its surface
 const NEARLY_CIRCULAR := 0.05         # if periapsis and apoapsis differ by less than this share of the apoapsis, the axis is ignored
 const AXIS_TOLERANCE_DEG := 10.0      # a departure from an elliptical orbit may be this far off the periapsis direction
 
@@ -76,6 +78,7 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 	var dv_departure := 0.0
 	var dv_arrival := 0.0
 	var capture_phase_deg := 0.0
+	var moon_escape: Dictionary = {}   # the escape orbit from a moon to a planet (TransferPlanner.moon_escape), empty otherwise
 	var aimable := true   # arriving from outside the sphere of influence: the periapsis direction can be aimed
 
 	if target_parent == origin_id:
@@ -156,10 +159,42 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 		if transfer.is_empty():
 			return {"error": "No launch window found."}
 		var t_dep := float(transfer["t_dep"])
+		var planet_gm := float(bodies[planet_id]["gm_km3_s2"])
+		var moon_fn := func(t: float) -> Vector2: return GameState.body_rel(origin_id, t)
 		var planet_velocity := TransferPlanner.velocity_kms(planet_fn, t_dep)
 		var moon_orbit_radius := GameState.body_rel(origin_id, t_dep).length()
-		dv_departure = TransferPlanner.departure_dv_from_moon(transfer, planet_velocity,
-				float(bodies[planet_id]["gm_km3_s2"]), moon_orbit_radius, origin_gm, origin_orbit_radius)
+		# The old estimate (the best direction, whatever the phase of the moon) is the fallback.
+		dv_departure = TransferPlanner.departure_dv_from_moon(transfer, planet_velocity, planet_gm, moon_orbit_radius, origin_gm, origin_orbit_radius)
+		# Patched conics (B-008, B-035): the ship has to leave on an escape orbit of the planet that passes through the moon's
+		# place, so the burn depends on where the moon is. The moon is in the right place for one stretch of every orbit of
+		# the moon: the departure is searched over one orbit of the moon around the best time of the transfer.
+		var moon_period := _period_days(origin_id)
+		var first := t_dep
+		var last := t_dep
+		if fixed_departure < 0.0:
+			first = maxf(t_start, t_dep - 0.5 * moon_period)
+			last = first + moon_period
+		var best_escape := {}
+		var best_transfer: Dictionary = {}
+		var candidates := 1 if fixed_departure >= 0.0 else MOON_WINDOW_STEPS + 1
+		for k in candidates:
+			var t_try := first + (last - first) * float(k) / float(MOON_WINDOW_STEPS)
+			var try_transfer := transfer
+			if fixed_departure < 0.0:
+				try_transfer = _transfer(sun_gm, planet_fn, target_fn, t_start, SYNODIC_SEARCH_DAYS, 1.0, t_try)
+				if try_transfer.is_empty():
+					continue
+			var escape := TransferPlanner.moon_escape(TransferPlanner.departure_velocity(try_transfer),
+					TransferPlanner.velocity_kms(planet_fn, float(try_transfer["t_dep"])), planet_gm,
+					moon_fn.call(float(try_transfer["t_dep"])), TransferPlanner.velocity_kms(moon_fn, float(try_transfer["t_dep"])),
+					origin_gm, origin_orbit_radius, float(bodies[planet_id]["radius_km"]) + MOON_ESCAPE_CLEARANCE_KM)
+			if not escape.is_empty() and (best_escape.is_empty() or float(escape["dv_kms"]) < float(best_escape["dv_kms"])):
+				best_escape = escape
+				best_transfer = try_transfer
+		if not best_escape.is_empty():
+			transfer = best_transfer
+			dv_departure = float(best_escape["dv_kms"])
+			moon_escape = best_escape
 		var v_inf := float(TransferPlanner.arrival_dv(transfer, target_fn, target_gm, capture_radius)["v_inf_kms"])
 		arrival_energy = 0.5 * v_inf * v_inf
 
@@ -197,6 +232,8 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 		"gm_target": target_gm,
 		"dv_capture": dv_arrival,
 	}
+	if not moon_escape.is_empty():
+		plan["moon_escape"] = moon_escape
 	if quick:
 		plan["dv_arrival"] = float(plan["dv_arrival"]) + AeroBraking.axis_turn_dv(plan)   # (what aiming cannot turn)
 		plan["aero"] ={"available": false, "enabled": false, "outcome": "ok", "message": ""}

@@ -47,3 +47,24 @@ static func analyse(stages: Array, engines: Dictionary, rules: Dictionary, paylo
 	for result in results:
 		total_dv += float(result["dv_ms"])
 	return {"stages": results, "total_dv_ms": total_dv, "total_mass_kg": mass_above}
+
+
+## Minimum net acceleration for a lift-off, in units of the local surface gravity: 1 g to overcome gravity plus 0.5 g on top
+## of it, so a ship needs a thrust-to-weight ratio of at least 1.5 at lift-off (0.5 g is 4.9 m/s2 on Earth). The atmosphere
+## is ignored and lifting bodies or wings get no bonus.
+const LIFTOFF_MIN_TWR := 1.5
+
+
+## Gravity at the surface of a body in m/s2 from its GM (km3/s2) and radius (km).
+static func surface_gravity_ms2(gm_km3_s2: float, radius_km: float) -> float:
+	return gm_km3_s2 / (radius_km * radius_km) * 1000.0
+
+
+## Thrust-to-weight ratio of a ship at lift-off: thrust (kN) against its weight (mass in kg) in the surface gravity (m/s2).
+static func liftoff_twr(thrust_kn: float, mass_kg: float, gravity_ms2: float) -> float:
+	return thrust_kn * 1000.0 / (mass_kg * gravity_ms2)
+
+
+## The least thrust (kN) that lifts a ship of this mass off a surface with this gravity.
+static func liftoff_min_thrust_kn(mass_kg: float, gravity_ms2: float) -> float:
+	return LIFTOFF_MIN_TWR * mass_kg * gravity_ms2 / 1000.0

@@ -691,3 +691,48 @@ No code change beyond the build label ("version 0.1 - Step 10 aq"). This zip hol
 ## Alpha v0.1 Stable
 
 - Not run (no Godot here). The code is the same as step 12h (tested OK by Jon on 24 Nov); only the build label changes: "Alpha v0.1 Stable". All 0.1 steps (to 12h) are built and tested; the 0.1 bugs that are not fixed (B-008, B-009, B-010, B-013, B-033, B-035) and B-036, B-037 are planned for 0.2.
+
+## Version 0.2, step 1: the course to a target joins the capture orbit (B-036)
+
+- Not run (no Godot here): to be tried by Jon. Version 0.1 was released as "Alpha v0.1 Stable" (the code of step 12h). This code is the draft kept aside during 0.1, merged (three-way, from the 10bl base) into the 12h code.
+- Seen in 10bl (Jon): Earth to Moon with the target orbit at the highest altitude (circular, 64,407 km): the course in the Earth view still aims at the centre of the Moon when the ship enters the Moon's context.
+- `GameState.leg_rel_with_offsets` now also handles the view of the body the target orbits (Earth for the Moon, Sun for a planet, a planet for its moon): once the local approach position (`to_hyp`, mirrored by `to_mirror` through the new helper `_mirrored`, which the view of the target uses too) is inside the blend range, the path is stretched from the transfer's own path to the position of the target plus the local approach course. Weight 1 at the periapsis radius of the approach (the capture orbit), 0 at the larger of the context radius of the target and twice the periapsis radius (so that an orbit at the edge of the context still stretches smoothly). Fuel, timing and the view of the target itself do not change.
+- `OrbitView._draw_scene` draws the planned transfer course from `leg_rel_with_offsets` of the plan's transfer leg (instead of the raw segment), so the line, the ship and the local route agree, also at the departure; with 240 points spaced by a cosine so that both ends (where the course bends) have more points (`TRANSFER_PATH_POINTS`).
+- Not changed: the green orbit of the transfer leg (the full ellipse of the leg) in the Earth view, and the departure from a moon to a planet (B-008, B-035).
+- Build label: "Alpha v0.2.1 Testing".
+
+
+## Version 0.2, step 1b: the course blend of B-036 is taken out
+
+The blend added in 0.2.1 (in the view of the body the target orbits, the course faded from the transfer path to the target's position plus the local approach hyperbola) made a new spline between two different curves, and the ship followed it. It is removed from `GameState.leg_rel_with_offsets`; the course and the ship path in that view are those of Alpha v0.1 Stable again. The 240-point drawing of the planned course (`TRANSFER_PATH_POINTS`) is kept. B-036 stays open: the transfer is aimed at the target's centre while the capture orbit is far from it, so the proper fix is to aim the transfer at the capture point (together with the Lambert solver).
+
+
+## Version 0.2, step 2: minimum thrust for lift-off
+
+- `ShipCalc.LIFTOFF_MIN_TWR` = 1.5: a ship leaving a surface needs a net acceleration of 1 g (to overcome the local gravity) plus 0.5 g, both in the local surface gravity (0.5 g is 4.9 m/s2 on Earth), so a thrust-to-weight ratio of at least 1.5 at lift-off. The atmosphere is ignored; lifting bodies and winged hulls get no bonus (low down the wings meet much more air resistance, high up there is little lift without extreme speeds).
+- Surface gravity = GM / radius^2 from `bodies.json` (`ShipCalc.surface_gravity_ms2`): Earth 9.80 m/s2, Moon 1.62, Mars 3.71, Ceres 0.28. Phobos and Deimos have about 0.006 and 0.002 m/s2 (every body except the Sun counts as having a surface).
+- `GameState.can_lift_off(body_id)` compares the first stage's thrust with the ship's weight (empty mass plus the propellant it has now). Nothing in the game departs from a surface yet, so the mission planner does not use it yet; the Ship design screen lists for every body the thrust-to-weight ratio of the design (first stage, full mass), whether it can lift off and the thrust it would need.
+
+
+## Version 0.2, step 3a: leaving a moon for a planet as patched conics (physics only; B-035, B-008)
+
+- Applies to a ship in orbit round a moon (the Moon, Phobos, Deimos) with a planet or dwarf planet as the destination. The heliocentric transfer still starts at the centre of the moon's planet; what changed is the burn and the departure time.
+- `TransferPlanner.moon_escape`: the transfer needs the excess speed v_dep - v_planet relative to the planet. The ship must leave the moon on an escape orbit of the planet that passes through the moon's place (counter-clockwise, outward bound) with that excess speed and with the outgoing asymptote in the right direction. The orbit is found by trying the angle psi (0 to 90 degrees) of the velocity at the moon's place against the radius, with the speed sqrt(v_inf^2 + 2 GM/r); the root of the asymptote direction error is refined by bisection. The excess speed relative to the moon is the difference of that velocity and the moon's own velocity; the burn is the usual escape burn from the circular parking orbit (periapsis radius of the ship's orbit). Of several roots the cheapest one is used. The moon's SOI is treated as a point (zero-radius patch).
+- Launch windows: the moon has to be in the right place for the escape, so with no fixed departure time `MissionPlanner.make_plan` tries `MOON_WINDOW_STEPS` + 1 = 49 departure times over one orbit of the moon around the planet's own best departure time (never before the start time), each with its own Lambert transfer (same flight time as the window's transfer), and takes the cheapest burn. A fixed departure time (the departure time control) is judged for the moon where it is then; if no escape orbit exists then, the old estimate (best direction, any moon phase) is used.
+- Not changed: the drawn course (the Moon hyperbola, the Earth hyperbola, the Sun transfer) and the ship's path in the views. That is step 3b.
+
+
+## Version 0.2, step 3b: the drawn course when leaving a moon for a planet (B-035, B-008)
+
+- `MissionPlanner.make_plan` stores the escape orbit found in step 3a as `plan["moon_escape"]` (the ship's velocity round the planet at the moon's place, the excess speeds relative to the planet and to the moon). `TransferPlanner.moon_escape` now also refuses escape orbits whose periapsis round the planet is lower than the planet's radius + `MOON_ESCAPE_CLEARANCE_KM` (300 km), so the ship no longer flies through the planet (this can change a burn or the departure time of 0.2.3 a little).
+- `GameState._add_moon_escape_course` gives the transfer leg two hyperbolas (built with `_escape_hyperbola`, the B-030 construction for a hyperbola through a given point with a given velocity):
+  - `planet_hyp`: round the planet, through the moon's place at the departure time with the ship's velocity; far away it turns into the transfer's own path (relative to the planet; it starts at the planet's centre) like the departure from a planet. Its blend zone is made as large as the moon's orbit (`scale`).
+  - `from_hyp`: round the moon, from the ship's place in its orbit, tangentially, with the excess speed relative to the moon. Its far path is the planet course seen from the moon (`_moon_far_course`: the planet course minus the moon's own position), the direction is taken over 1.5 hours after departure (not a day, because the moon moves 90,000 km a day).
+- Views (`leg_rel_with_offsets`): the moon's view shows from_hyp blended into the planet course; the planet's view shows the planet course (the escape orbit through the moon's place, leaving tangentially); the Sun view is as before (the ship starts at the moon, the offset fades out).
+- Plans without a moon escape (a fixed departure with no escape orbit then) keep the old display.
+
+
+## Version 0.2, step 3c: a moon leaving for a higher orbit round its planet (B-039), and the aerobraking suggestion check (B-037)
+
+- B-039: `TransferPlanner.transfer_to_central` assumed the ship always goes down (it starts at the apoapsis of the transfer ellipse). Leaving Phobos for a circular orbit at 10,000 km altitude (higher than Phobos) put the ellipse the wrong way round: it started and ended at the target orbit and never touched Phobos' orbit. Going up (r2 > r1) the ship now starts at the periapsis (`peri_longitude` = the departure direction, mean anomaly 0); going down is as before.
+- B-037: `AeroBraking.setup_plan` no longer suggests aerobraking when (1) the arrival orbit has less energy than the target orbit (arrival energy <= -GM / (rp_t + ra_t); aerobraking only takes energy away), or (2) the plan with aerobraking needs as much delta-v after arrival as the propulsive capture (it is only suggested when it is cheaper). The player can still switch it on; the message says why it is off.

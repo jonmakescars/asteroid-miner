@@ -193,6 +193,26 @@ static func load_ship_design() -> void:
 		budget_eur += float(facility_types[type_id]["kit"]["cost_eur"])
 
 
+## True for a body with a surface to lift off from (everything but the Sun).
+static func has_hard_surface(body_id: String) -> bool:
+	return bodies.has(body_id) and str(bodies[body_id]["type"]) != "star"
+
+
+## Gravity at the surface of a body (m/s2).
+static func surface_gravity_ms2(body_id: String) -> float:
+	return ShipCalc.surface_gravity_ms2(float(bodies[body_id]["gm_km3_s2"]), float(bodies[body_id]["radius_km"]))
+
+
+## Whether the ship can lift off from the surface of a body: its first stage must give a thrust-to-weight ratio of at least
+## ShipCalc.LIFTOFF_MIN_TWR there, at the ship's mass with the propellant it has now. (Nothing in the game departs from a
+## surface yet; the mission planner will use this when it does.)
+static func can_lift_off(body_id: String) -> bool:
+	if not has_hard_surface(body_id):
+		return false
+	var mass := dry_mass_kg() + maxf(ship_fuel_kg, 0.0)
+	return ShipCalc.liftoff_twr(ship_thrust_kn, mass, surface_gravity_ms2(body_id)) >= ShipCalc.LIFTOFF_MIN_TWR
+
+
 ## The mass of the ship without propellant: the empty ship plus the cargo it carries. This is the mass the
 ## rocket equation works with, so loading a kit lowers the delta-v and deploying it raises it again.
 static func dry_mass_kg() -> float:
@@ -1025,10 +1045,15 @@ static func leg_rel_with_offsets(leg: Dictionary, frame_id: String, jd: float) -
 	if leg["kind"] != "transfer":
 		return base
 	var total := base
+	if leg.has("planet_hyp") and frame_id == str(leg["planet_id"]):
+		return _planet_course(leg, jd)   # leaving a moon: in the view of its planet the course is the escape orbit of the planet
 	if str(leg.get("from_body", "")) == frame_id:
 		if leg.has("from_hyp"):
 			var from_hyp: Dictionary = leg["from_hyp"]
-			total = _blend_hyperbola(from_hyp, base, (jd - float(from_hyp["t0"])) * 86400.0)
+			var from_base := base
+			if leg.has("planet_hyp"):
+				from_base = _moon_far_course(leg, jd)   # leaving a moon: the far course is the escape orbit of the planet, seen from the moon
+			total = _blend_hyperbola(from_hyp, from_base, (jd - float(from_hyp["t0"])) * 86400.0)
 		else:
 			total += _faded(leg["from_offset"], base - (leg["from_ref"] as Vector2))
 	if leg.has("anc_offsets") and (leg["anc_offsets"] as Dictionary).has(frame_id):
@@ -1045,9 +1070,81 @@ static func leg_rel_with_offsets(leg: Dictionary, frame_id: String, jd: float) -
 		else:
 			total += _faded(leg["to_offset"], base - (leg["to_ref"] as Vector2))
 		if leg.has("to_mirror"):   # B-015: mirrored about the capture axis so that the approach sweeps counter-clockwise
-			var axis := float(leg["to_mirror"])
-			total = (total.rotated(-axis) * Vector2(1.0, -1.0)).rotated(axis)
+			total = _mirrored(leg, total)
 	return total
+
+
+## Leaving a moon for a planet (B-035, B-008): the course round the moon's planet, relative to the planet: the escape
+## hyperbola that passes through the moon's place with the ship's velocity at the moment of the burn, which far away becomes
+## the transfer's own path (it starts at the planet's centre).
+static func _planet_course(leg: Dictionary, jd: float) -> Vector2:
+	var hyp: Dictionary = leg["planet_hyp"]
+	return _blend_hyperbola(hyp, _leg_rel(leg, str(leg["planet_id"]), jd), (jd - float(hyp["t0"])) * 86400.0)
+
+
+## The same course relative to the moon the ship leaves.
+static func _moon_far_course(leg: Dictionary, jd: float) -> Vector2:
+	return _planet_course(leg, jd) - body_rel(str(leg["from_body"]), jd)
+
+
+## A hyperbolic escape orbit round a body (gravity mu) that passes through the point (relative to the body) with the
+## given velocity direction, with the speed at infinity v_inf; the periapsis time is worked out from t_dep (B-030).
+static func _escape_hyperbola(mu: float, point: Vector2, velocity: Vector2, v_inf: float, t_dep: float) -> Dictionary:
+	var radius := point.length()
+	var v_h2 := v_inf * v_inf + 2.0 * mu / radius
+	var cos_gamma := clampf(point.cross(velocity) / maxf(radius * velocity.length(), 1.0e-12), 0.0001, 1.0)
+	var ang_mom := radius * sqrt(v_h2) * cos_gamma
+	var p_semi := ang_mom * ang_mom / mu
+	var e_h := sqrt(1.0 + v_inf * v_inf * ang_mom * ang_mom / (mu * mu))
+	var nu := acos(clampf((p_semi / radius - 1.0) / e_h, -1.0, 1.0))
+	if velocity.dot(point) < 0.0:
+		nu = -nu   # still on the way in: the periapsis is ahead
+	var hyp := _hyperbola(mu, p_semi / (1.0 + e_h), point.angle() - nu, v_inf)
+	var anomaly := acosh(maxf((radius / float(hyp["a"]) + 1.0) / float(hyp["e"]), 1.0))
+	var since_periapsis := (float(hyp["e"]) * sinh(anomaly) - anomaly) / float(hyp["n"])
+	hyp["t0"] = t_dep - signf(nu) * since_periapsis / 86400.0
+	return hyp
+
+
+## Gives a transfer that leaves a moon for a planet the two escape orbits of its patched-conic course (step 3b of version 0.2):
+## round the planet (planet_hyp, through the moon's place) and round the moon (from_hyp, from the ship's own orbit).
+static func _add_moon_escape_course(leg: Dictionary, a_plan: Dictionary, parked: Dictionary) -> void:
+	var escape: Dictionary = a_plan["moon_escape"]
+	var origin_id := str(a_plan["origin_id"])
+	var planet_id := str(bodies[origin_id]["parent"])
+	var t_dep := float(a_plan["t_dep"])
+	var moon_point := body_rel(origin_id, t_dep)
+	var dt := minf(1.0, 0.25 * float(a_plan["flight_days"]))
+	var planet_hyp := _escape_hyperbola(float(bodies[planet_id]["gm_km3_s2"]), moon_point,
+			Vector2(float(escape["vx"]), float(escape["vy"])), float(escape["v_inf_planet_kms"]), t_dep)
+	var far_step := _leg_rel(leg, planet_id, t_dep + dt) - _leg_rel(leg, planet_id, t_dep + 0.5 * dt)
+	planet_hyp["delta"] = _asymptote_angle(planet_hyp, false) - far_step.angle()
+	planet_hyp["shift"] = _asymptote_shift(planet_hyp, false)
+	planet_hyp["scale"] = moon_point.length()   # (the course has to be the hyperbola as far out as the moon's orbit)
+	leg["planet_id"] = planet_id
+	leg["planet_hyp"] = planet_hyp
+	# Round the moon: from the ship's place in its orbit, tangentially, with the speed at infinity relative to the moon.
+	var parked_segment: Dictionary = parked["segment"]
+	var departure_point: Vector2 = Kepler.position_at(parked_segment, t_dep)
+	var h_day := 0.001
+	var orbit_velocity := (Kepler.position_at(parked_segment, t_dep + h_day) - Kepler.position_at(parked_segment, t_dep - h_day)) \
+			/ (2.0 * h_day * 86400.0)
+	var moon_hyp := _escape_hyperbola(float(bodies[origin_id]["gm_km3_s2"]), departure_point, orbit_velocity,
+			float(escape["v_inf_moon_kms"]), t_dep)
+	var step_a := _moon_far_course(leg, t_dep + 0.025)
+	var step_b := _moon_far_course(leg, t_dep + 0.05)
+	moon_hyp["delta"] = _asymptote_angle(moon_hyp, false) - (step_b - step_a).angle()
+	moon_hyp["shift"] = _asymptote_shift(moon_hyp, false)
+	moon_hyp["scale"] = float(parked_segment["semi_major_axis_km"]) * (1.0 + float(parked_segment["eccentricity"]))
+	leg["from_hyp"] = moon_hyp
+
+
+## The approach course of a leg in the view of its target, mirrored about the capture axis when the leg has to_mirror (B-015).
+static func _mirrored(leg: Dictionary, position: Vector2) -> Vector2:
+	if not leg.has("to_mirror"):
+		return position
+	var axis := float(leg["to_mirror"])
+	return (position.rotated(-axis) * Vector2(1.0, -1.0)).rotated(axis)
 
 
 ## A hyperbolic escape or approach around a body: periapsis radius rp at the angle phi (the point where the
@@ -1178,6 +1275,8 @@ static func transfer_leg_for_plan(a_plan: Dictionary, parked: Dictionary) -> Dic
 					"ref": base_ancestor,
 				}
 			leg["anc_offsets"] = anc_offsets
+			if a_plan.has("moon_escape"):
+				_add_moon_escape_course(leg, a_plan, parked)
 	var captures: Array = a_plan.get("capture_legs", [])
 	var fly_aero: Dictionary = a_plan.get("aero", {})
 	if captures.is_empty() and str(a_plan.get("outcome", "ok")) == "flyby" and fly_aero.get("enabled", false) \

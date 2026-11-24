@@ -103,6 +103,9 @@ static func transfer_to_central(gm: float, origin_fn: Callable, t_dep: float, ca
 	var r2 := capture_radius_km
 	var a := 0.5 * (r1 + r2)
 	var flight_days := PI * sqrt(a * a * a / gm) / SECONDS_PER_DAY
+	# Going down (r2 < r1) the ship starts at the apoapsis of the transfer ellipse, going up (r2 > r1) at its periapsis
+	# (B-039: the ellipse of a moon leaving for a higher orbit round its planet started at the wrong end).
+	var going_up := r2 > r1
 	return {
 		"gm": gm,
 		"t_dep": t_dep,
@@ -112,8 +115,8 @@ static func transfer_to_central(gm: float, origin_fn: Callable, t_dep: float, ca
 		"r2": r2,
 		"a": a,
 		"e": absf(r2 - r1) / (r1 + r2),
-		"peri_longitude": origin.angle() + PI,
-		"mean_anomaly_start_deg": 180.0,
+		"peri_longitude": origin.angle() if going_up else origin.angle() + PI,
+		"mean_anomaly_start_deg": 0.0 if going_up else 180.0,
 		"origin": origin,
 		"target_pos": Vector2.from_angle(origin.angle() + PI) * r2,
 		"angle_error": 0.0,
@@ -286,6 +289,78 @@ static func departure_dv_from_moon(transfer: Dictionary, planet_velocity: Vector
 	var v_inf_moon := absf(v_required - v_moon)
 	var v_circular := sqrt(moon_gm / parking_radius_km)
 	return sqrt(v_inf_moon * v_inf_moon + 2.0 * v_circular * v_circular) - v_circular
+
+
+## The direction (radians, minus the wanted one) in which the outgoing asymptote of the escape orbit points, for a ship that
+## leaves the position moon_pos (relative to the planet) with the speed v_required at the angle psi from the radius (counter-clockwise).
+static func _asymptote_error(psi: float, moon_pos: Vector2, v_required: float, planet_gm: float, wanted: float) -> float:
+	var radius_hat := moon_pos.normalized()
+	var velocity := (radius_hat * cos(psi) + radius_hat.rotated(PI / 2.0) * sin(psi)) * v_required
+	var ecc_vector := (moon_pos * (v_required * v_required - planet_gm / moon_pos.length()) - velocity * moon_pos.dot(velocity)) / planet_gm
+	var ecc := ecc_vector.length()
+	if ecc <= 1.0:
+		return 0.0
+	return wrapf(ecc_vector.angle() + acos(-1.0 / ecc) - wanted, -PI, PI)
+
+
+## Leaving a moon for a transfer around the Sun, as patched conics (B-008, B-035): the transfer starts at the centre of the
+## planet with the velocity v_dep (km/s, around the Sun), so relative to the planet the ship needs the excess speed
+## v_dep - planet_velocity, and it has to be on an escape orbit of the planet that passes through the moon's place with that
+## excess speed and direction. Of the escape orbits that do (counter-clockwise, outward bound), the one that needs the
+## least burn from the circular parking orbit round the moon (the excess speed relative to the moon is the speed of the
+## escape orbit at the moon minus the moon's own velocity) is used. moon_pos and moon_velocity are relative to the planet.
+## Returns {"dv_kms", "v_inf_moon_kms", "axis_deg"}, empty if no such orbit exists with the moon where it is.
+static func moon_escape(v_dep: Vector2, planet_velocity: Vector2, planet_gm: float, moon_pos: Vector2, moon_velocity: Vector2,
+		moon_gm: float, parking_radius_km: float, min_periapsis_km := 0.0) -> Dictionary:
+	var v_inf_vector := v_dep - planet_velocity
+	var v_inf := v_inf_vector.length()
+	var radius := moon_pos.length()
+	if v_inf < 1.0e-6 or radius < 1.0:
+		return {}
+	var wanted := v_inf_vector.angle()
+	var v_required := sqrt(v_inf * v_inf + 2.0 * planet_gm / radius)
+	var steps := 90
+	var psi_max := PI / 2.0
+	var best := {}
+	var previous_psi := 0.01
+	var previous_error := _asymptote_error(previous_psi, moon_pos, v_required, planet_gm, wanted)
+	for i in range(1, steps + 1):
+		var psi := lerpf(0.01, psi_max, float(i) / float(steps))
+		var error := _asymptote_error(psi, moon_pos, v_required, planet_gm, wanted)
+		if previous_error * error <= 0.0 and absf(previous_error - error) < 1.0:   # a crossing (not the jump at +-180 degrees)
+			var low := previous_psi
+			var high := psi
+			var low_error := previous_error
+			for _k in 40:
+				var mid := 0.5 * (low + high)
+				var mid_error := _asymptote_error(mid, moon_pos, v_required, planet_gm, wanted)
+				if low_error * mid_error <= 0.0:
+					high = mid
+				else:
+					low = mid
+					low_error = mid_error
+			var root := 0.5 * (low + high)
+			var radius_hat := moon_pos.normalized()
+			var velocity := (radius_hat * cos(root) + radius_hat.rotated(PI / 2.0) * sin(root)) * v_required
+			# The escape orbit must not run through the planet: its periapsis has to be above min_periapsis_km (B-035).
+			var ang_mom := radius * v_required * sin(root)
+			var ecc_planet := sqrt(1.0 + v_inf * v_inf * ang_mom * ang_mom / (planet_gm * planet_gm))
+			if ang_mom * ang_mom / planet_gm / (1.0 + ecc_planet) < min_periapsis_km:
+				previous_psi = psi
+				previous_error = error
+				continue
+			var relative := velocity - moon_velocity
+			var v_inf_moon := relative.length()
+			var v_circular := sqrt(moon_gm / parking_radius_km)
+			var dv := sqrt(v_inf_moon * v_inf_moon + 2.0 * v_circular * v_circular) - v_circular
+			if best.is_empty() or dv < float(best["dv_kms"]):
+				var ecc_moon := 1.0 + parking_radius_km * v_inf_moon * v_inf_moon / moon_gm
+				best = {"dv_kms": dv, "v_inf_moon_kms": v_inf_moon, "v_inf_planet_kms": v_inf,
+						"vx": velocity.x, "vy": velocity.y,   # the ship's velocity round the planet at the moon's place
+						"axis_deg": rad_to_deg(relative.angle() - acos(-1.0 / ecc_moon))}
+		previous_psi = psi
+		previous_error = error
+	return best
 
 
 ## Capture burn into a circular orbit around the target. Returns {"v_inf_kms", "dv_kms"}.

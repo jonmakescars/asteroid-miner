@@ -25,6 +25,7 @@ const SHIP_VELOCITY_STEP_DAYS := 60.0 / 86400.0
 const RING_RADIUS_PX := 10.0
 const RING_BELOW_PX := 2.0         # a body whose true radius is smaller than this many pixels gets a ring around it
 const ORBIT_SAMPLES := 160
+const TRANSFER_PATH_POINTS := 240   # points of the planned transfer course in the view of its own body
 # Orbit lines fade in with the size of the view of their body on the screen (radius of the view in pixels, zooming
 # out) and out when the view is many times bigger than the screen (in half-screens, zooming in). 10bk: 16-60 px and 1.6-5.
 ## Atmospheric halo layers (atmo_day / atmo_twilight): turn them if the pack draws the Sun on another side than the right.
@@ -1568,9 +1569,16 @@ func _draw_scene(frame_id: String, centre: Vector2, px_per_km: float) -> void:
 	# Planned transfer path, drawn when the transfer happens around the body at the centre of the view.
 	if not plan.is_empty() and plan["frame"] == frame_id:
 		var path := PackedVector2Array()
-		for i in 81:
-			var t := float(plan["t_dep"]) + float(plan["flight_days"]) * float(i) / 80.0
-			path.append(_to_screen(Kepler.position_at(plan["transfer_segment"], t), centre, px_per_km))
+		# The course the ship flies (B-036): the departure and the approach are stretched into the local courses, as for
+		# the ship (GameState.leg_rel_with_offsets). The points are closer together near both ends, where the course bends.
+		var transfer_leg := GameState.plan_transfer_leg(plan)
+		var points := TRANSFER_PATH_POINTS
+		for i in points + 1:
+			var along := 0.5 - 0.5 * cos(PI * float(i) / float(points))
+			var t := float(plan["t_dep"]) + float(plan["flight_days"]) * along
+			var position_km: Vector2 = Kepler.position_at(plan["transfer_segment"], t) if transfer_leg.is_empty() \
+					else GameState.leg_rel_with_offsets(transfer_leg, frame_id, t)
+			path.append(_to_screen(position_km, centre, px_per_km))
 		draw_polyline(path, _fade(_course(0.9)), _lw(1.5), true)
 	_draw_local_route(frame_id, centre, px_per_km)
 	_draw_body(frame_id, centre, px_per_km)

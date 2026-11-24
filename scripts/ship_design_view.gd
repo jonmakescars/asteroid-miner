@@ -309,6 +309,20 @@ func _refresh() -> void:
 		if accel / ShipCalc.G0 > float(rules["warn_start_accel_above_g"]):
 			lines.append("   Warning: acceleration above %s g, dangerous for crew" % str(rules["warn_start_accel_above_g"]))
 	lines.append("")
+	lines.append("Lift-off from a surface (first stage, full mass, thrust-to-weight %s needed; the atmosphere is ignored):" % _num(ShipCalc.LIFTOFF_MIN_TWR))
+	GameState.load_data()
+	var liftoff_mass := float(analysis["total_mass_kg"])
+	var liftoff_thrust := float(stages[0]["thrust_kn"]) if not stages.is_empty() else 0.0
+	for body_id in GameState.bodies:
+		if not GameState.has_hard_surface(body_id):
+			continue
+		var gravity := GameState.surface_gravity_ms2(body_id)
+		var twr := ShipCalc.liftoff_twr(liftoff_thrust, liftoff_mass, gravity)
+		lines.append("   %s (%s g): thrust-to-weight %s, %s (needs %s %s)" % [
+				GameState.bodies[body_id]["name"], _num(gravity / ShipCalc.G0), _num(twr),
+				"can lift off" if twr >= ShipCalc.LIFTOFF_MIN_TWR else "too little thrust",
+				_num(UnitFormat.to_display("kN", ShipCalc.liftoff_min_thrust_kn(liftoff_mass, gravity))), UnitFormat.display_unit("kN")])
+	lines.append("")
 	lines.append("For comparison (approximate, from Earth orbit):")
 	for reference in REFERENCE_DV:
 		lines.append("   %s: %s %s" % [reference[0], _num(UnitFormat.speed_kms(float(reference[1]))), speed_unit])

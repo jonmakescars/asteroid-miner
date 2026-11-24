@@ -324,6 +324,14 @@ static func setup_plan(plan: Dictionary) -> void:
 	aero["ctx"] = ctx
 	aero["h_min_km"] = float(atmosphere["min_periapsis_altitude_km"])
 	aero["h_max_km"] = interface_altitude_km(atmosphere) - 1.0
+	if float(plan["arrival_energy"]) <= -float(plan["gm_target"]) / (float(plan["rp_t"]) + float(plan["ra_t"])):
+		# B-037: the arrival orbit has less energy than the target orbit (for example from a moon up to a higher orbit round
+		# its planet): aerobraking only takes energy away, so there is nothing for it to do.
+		aero["n"] = 1
+		aero["h_km"] = maxf(find_altitude(ctx, 1, SEARCH_DT), float(aero["h_min_km"]))
+		center_band(aero, float(aero["h_km"]))
+		aero["message"] = "The target orbit has more energy than the orbit the ship arrives on, so aerobraking cannot help here and the capture is propulsive. You can still switch aerobraking on."
+		return
 	var suggestion := suggest(ctx)
 	if suggestion.is_empty():
 		aero["n"] = 1
@@ -331,7 +339,12 @@ static func setup_plan(plan: Dictionary) -> void:
 		center_band(aero, float(aero["h_km"]))
 		aero["message"] = "The shield cannot take the heat of aerobraking with the safe margin the planner keeps (%.0f%% of the remaining shield in reserve), so the capture is propulsive. You can still switch aerobraking on." % ((1.0 - HEAT_MARGIN) * 100.0)
 		return
+	var propulsive_dv := float(plan["dv_arrival"])   # (set by _use_propulsive_capture above)
 	apply(plan, true, int(suggestion["n"]), float(suggestion["h_km"]), true)
+	if bool(aero["enabled"]) and str(aero["outcome"]) == "ok" and float(plan["dv_arrival"]) >= propulsive_dv - 1.0e-6:
+		# B-037: suggested only when it is cheaper than the purely propulsive plan.
+		apply(plan, false, int(suggestion["n"]), float(suggestion["h_km"]), true)
+		aero["message"] = "Aerobraking would not save any propellant here, so the capture is propulsive. You can still switch aerobraking on."
 
 
 ## Centres the range of the periapsis slider on altitude h_km.
