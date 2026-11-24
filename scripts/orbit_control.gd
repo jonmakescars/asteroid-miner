@@ -31,6 +31,7 @@ var _ra_spin: SpinBox
 var _offset_slider: HSlider
 var _offset_spin: SpinBox
 var _offset_label: Label
+var _unit := 1.0   # the shown unit of the altitude boxes per km (1 for km, 1/1.609 for miles)
 
 
 ## Both altitudes after a change. changed is "rp" or "ra": the one the player changed stays as it is.
@@ -50,16 +51,17 @@ static func is_circular(rp: float, ra: float) -> bool:
 
 func _init() -> void:
 	_syncing = true   # changing the limits of a spin box can change (and announce) its value: ignore that
+	_unit = UnitFormat.length_factor()
 	add_theme_constant_override("h_separation", 8)
-	_rp_spin = _add_row("Periapsis (km)", true)
+	_rp_spin = _add_row("Periapsis (%s)" % UnitFormat.length_unit(), true)
 	_rp_slider = get_child(get_child_count() - 1) as HSlider
-	_ra_spin = _add_row("Apoapsis (km)", true)
+	_ra_spin = _add_row("Apoapsis (%s)" % UnitFormat.length_unit(), true)
 	_ra_slider = get_child(get_child_count() - 1) as HSlider
 	_offset_spin = _add_row("Axis offset (deg)", false)
 	_offset_slider = get_child(get_child_count() - 1) as HSlider
 	_offset_label = get_child(get_child_count() - 3) as Label
-	_rp_spin.value_changed.connect(func(value: float) -> void: _commit("rp", value))
-	_ra_spin.value_changed.connect(func(value: float) -> void: _commit("ra", value))
+	_rp_spin.value_changed.connect(func(value: float) -> void: _commit("rp", value / _unit))
+	_ra_spin.value_changed.connect(func(value: float) -> void: _commit("ra", value / _unit))
 	_offset_spin.value_changed.connect(func(value: float) -> void: _commit("offset", value))
 	_rp_slider.drag_ended.connect(func(_c: bool) -> void: _commit("rp", _from_slider(_rp_slider.value)))
 	_ra_slider.drag_ended.connect(func(_c: bool) -> void: _commit("ra", _from_slider(_ra_slider.value)))
@@ -100,8 +102,8 @@ func setup(body_radius_km: float, max_altitude_km: float) -> void:
 		(slider as HSlider).min_value = 0.0
 		(slider as HSlider).max_value = _to_slider(max_alt_km)
 	for spin in [_rp_spin, _ra_spin]:
-		(spin as SpinBox).min_value = MIN_FRACTION * radius_km
-		(spin as SpinBox).max_value = max_alt_km
+		(spin as SpinBox).min_value = MIN_FRACTION * radius_km * _unit
+		(spin as SpinBox).max_value = max_alt_km * _unit
 		(spin as SpinBox).step = 0.1
 	_syncing = false
 
@@ -112,8 +114,8 @@ func set_orbit(rp_alt_km: float, ra_alt_km: float, offset: float) -> void:
 	ra_alt = ra_alt_km
 	offset_deg = offset
 	_syncing = true
-	_rp_spin.set_value_no_signal(rp_alt)
-	_ra_spin.set_value_no_signal(ra_alt)
+	_rp_spin.set_value_no_signal(rp_alt * _unit)
+	_ra_spin.set_value_no_signal(ra_alt * _unit)
 	_rp_slider.set_value_no_signal(_to_slider(rp_alt))
 	_ra_slider.set_value_no_signal(_to_slider(ra_alt))
 	_offset_spin.set_value_no_signal(offset_deg)

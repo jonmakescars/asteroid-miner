@@ -10,6 +10,7 @@ const SHADERS: Array = ["res://shaders/sprite_lit.gdshader", "res://asteroid-min
 const NIGHT_SHADERS: Array = ["res://shaders/city_lights.gdshader", "res://asteroid-miner-sprites/shaders/city_lights.gdshader"]
 const ATMOSPHERE_PATH := "res://data/atmospheres.json"   # tints and strengths of the atmospheric halo per body
 const ATMO_FOLDERS: Array = ["bodies", "scenery", "effects"]   # where atmo_day.png / atmo_twilight.png may be in the pack
+const SKY_FOLDERS: Array = ["scenery", "effects", "bodies", "backgrounds", "sky"]   # where sky_milkyway.png / sky_stars.png may be
 const DISC_RADIUS_PX := 192.0   # every round body in the pack has a disc of this radius
 
 static var _ready_once := false
@@ -19,6 +20,7 @@ static var _entries: Dictionary = {}   # key -> {texture, normal, glow, pivot}
 static var _shader: Shader = null
 static var _night_shader: Shader = null
 static var _atmospheres: Dictionary = {}
+static var _sky: Dictionary = {}   # layer name -> Texture2D (or null = not found)
 static var _atmo_keys: Dictionary = {}   # layer name -> manifest key ("" = not found)
 
 
@@ -99,7 +101,7 @@ static func body_key(id: String) -> String:
 ## A new material that lights a sprite with the normal map (null when the shader is missing).
 static func lit_material(normal: Texture2D) -> ShaderMaterial:
 	_setup()
-	if _shader == null or normal == null:
+	if _shader == null or normal == null or not UserSettings.flag("lighting_shader"):   # (switched off in the settings: flat sprites)
 		return null
 	var material := ShaderMaterial.new()
 	material.shader = _shader
@@ -112,7 +114,7 @@ static func lit_material(normal: Texture2D) -> ShaderMaterial:
 ## own normal map says the Sun does not light it (null when the shader is missing).
 static func night_material(normal: Texture2D) -> ShaderMaterial:
 	_setup()
-	if _night_shader == null or normal == null:
+	if _night_shader == null or normal == null or not UserSettings.flag("lighting_shader"):
 		return null
 	var material := ShaderMaterial.new()
 	material.shader = _night_shader
@@ -133,6 +135,22 @@ static func atmo_key(layer: String) -> String:
 				break
 	_atmo_keys[layer] = found
 	return found
+
+
+## The texture of a sky layer ("sky_milkyway" or "sky_stars"), or null when the pack does not have it.
+static func sky_texture(layer: String) -> Texture2D:
+	_setup()
+	if _sky.has(layer):
+		return _sky[layer]
+	var texture: Texture2D = null
+	if _root != "":
+		for folder: String in SKY_FOLDERS:
+			var path := "%s%s/%s.png" % [_root, folder, layer]
+			if ResourceLoader.exists(path):
+				texture = load(path) as Texture2D
+				break
+	_sky[layer] = texture
+	return texture
 
 
 ## The halo of a body: {day: Color, twilight: Color, day_strength, twilight_strength}, or {} when it has no atmosphere.

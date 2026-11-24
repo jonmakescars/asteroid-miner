@@ -597,3 +597,71 @@ No code change beyond the build label ("version 0.1 - Step 10 aq"). This zip hol
 - Rows are made by `_add_choice` (drop-down list). The slider helper (slider with its number next to it) is written with the first slider setting in 12b, so that it is tested on a real setting.
 - The settings file is in `user://`, so the export filter does not matter for it.
 - Build label: "Alpha v0.1.12.a Testing".
+
+## Step 12b: visual settings
+
+- Not run (no Godot here): to be tried by Jon. (12a: the Settings screen was blank when the game was started with Run from the project list, and fine after Edit and Run: the new files had not been imported.)
+- `UserSettings` has the new settings (defaults in `DEFAULTS`): `milkyway_brightness` 1, `star_brightness` 1, `parallax_strength` 0.5 (saved only; the star background itself is 12d), `text_scale` 1 (menu and panel text), `map_label_scale` 1 (body names, ship name, numbers of the top bar), `line_brightness` 1, `line_width` 1, `effects_intensity` 1, `colour_blind` false, `show_body_names`, `show_moon_orbits`, `show_tiny_rings` (all true). New helpers: `number(key)`, `flag(key)`, `colour(name)` (palette: warning, paused, ship_orbit, course; normal and colour-blind version), `text_px(base)`, `map_text_px(base)`, `apply_text_scale(root)`, `remove_listener`.
+- The settings screen has sliders (with the number next to each, two decimals), check boxes and the Units list, in sections: Background, Text size, Orbit lines, Effects, Colours, Labels, Units. Reset to defaults sets everything back and shows it.
+- Menu and panel text: `apply_text_scale(self)` gives the root of the menu, the settings screen, the ship design screen and the orbit map a Theme with `default_font_size` 16 x the setting (everything without an own font size follows; the headings with their own size use `text_px`). The settings screen follows the slider at once; the other screens read it when they are opened. Map labels: `map_text_px(16)` for the body names, the ship name, and the labels of the top bar (`TopBar.refresh`).
+- Orbit lines: `OrbitView._fade` multiplies the opacity by `line_brightness` (at most 1); `_lw(width)` multiplies the width by `line_width` for the orbit lines, the planned course, the capture rings and the green ship orbit.
+- Effects: `effects_intensity` scales the plasma (opacity), the hull glow (`heat` of the lighting shader) and the engine flame (opacity, off at 0) in `_apply_ship`.
+- Colour-blind palette: the green ship orbit and the blue planned course become yellow and sky blue, the orange warning line yellow, the red "Paused" reddish purple (`UserSettings.colour`). Colours of other panels are not changed yet. The orange heating triangle and the orange facility squares are unchanged.
+- Labels: `show_body_names` hides the names of the bodies (not the ship name), `show_moon_orbits` hides the orbit lines of moons (the planets round the Sun stay), `show_tiny_rings` hides the rings round bodies smaller than 2 px.
+- Build label: "Alpha v0.1.12.b Testing".
+
+## Step 12c: behaviour and display settings (units not yet)
+
+- Not run (no Godot here): to be tried by Jon. 12b was tested OK by Jon on 24 Nov.
+- The imperial display of the Units setting is not in this build: it touches about 60 texts (distances, speeds, masses, accelerations on the map, in the planner and on the ship design screen) and the input boxes with km and kg values, so it gets its own build (12c2). The setting is only saved so far.
+- New settings (defaults in `UserSettings.DEFAULTS`): `animations` true, `ship_sprites` true, `orientation` "auto", `frame_cap` 60.0, `lighting_shader` true. Settings screen: sections Behaviour (Animations, Ship sprites) and Display (Screen orientation, Frame rate limit, Lighting shader) above Units.
+- Animations: `OrbitView._process` shows the burn-up animation only when `animations` is on (the "Ship lost" message is always shown).
+- Ship sprites: off = the ship is always the triangle icon, never the sprite (`_draw_map`, the same as when the ship sprite is missing).
+- Screen orientation and frame rate: `UserSettings.apply_display()` sets `Engine.max_fps` (30 or 60) and, on phones and tablets only (`OS.has_feature("mobile")`), `DisplayServer.screen_set_orientation` (sensor, sensor portrait or sensor landscape). It is called when the menu and the map open and when one of the two settings changes. If the Android export has its own orientation setting, this call overrides it while the game runs.
+- Lighting shader: off = `SpriteLibrary.lit_material` and `night_material` return null, so planets, moons and the ship are drawn flat (no light and shadow, no city lights); the atmospheric halo (additive layers) is not affected. The nodes are made when the map opens, so the change shows after it is opened again.
+- Build label: "Alpha v0.1.12.c Testing".
+
+## Step 12c2: imperial units
+
+- Not run (no Godot here): to be tried by Jon. (12c was split: this is the units part.)
+- New class `UnitFormat` (`scripts/unit_format.gd`): the game still works in metric inside; only what is shown and typed is converted when the Units setting is imperial. Distances and altitudes km -> miles (1.609344 km), speeds km/s -> mi/s, small speeds (burns) m/s -> ft/s, masses kg -> lb, larger masses t -> US tons (907.18 kg), accelerations m/s2 -> ft/s2, areas m2 -> ft2, and in the ship design boxes kg -> lb, cm -> in, kN -> klbf (thousand pounds-force). Heat (MJ/m2, MW/m2) and g stay. Costs (EUR) and times are not touched.
+- Places changed: the status texts (`GameState.orbit_status_text`, `_km_text`), the planner and info lines in `orbit_view.gd` (fuel, burns, aerobraking, cargo, facilities, refuel and buy messages), the messages of `aero_braking.gd` (crash, burn-up, decay, fly-by), the periapsis and apoapsis boxes (`OrbitControl`: the boxes show miles and the value is converted back to km when typed) and the aerobraking altitude box (`altitude_spin`), the sliders' text boxes and the result text of the ship design screen. Not changed: debug texts (the route shift test report, the approach diagnostic) and the sliders' own scales.
+- The screens read the setting when they are opened (the planner boxes are made then), so a change shows when the map or ship design screen is opened again. A plan made earlier keeps the texts it was made with (outcome and warning lines) until it is planned again.
+- Rounding: the altitude boxes show one decimal in the shown unit, as before for km, so a typed value in miles is converted to km with a small rounding.
+- Build label: "Alpha v0.1.12.c2 Testing".
+
+## Step 12d: star background
+
+- Not run (no Godot here): to be tried by Jon. 12c2 was tested OK by Jon on 24 Nov. Build label: "Alpha v0.1.12.d Testing".
+- Art not in the code package: `sky_milkyway.png` and `sky_stars.png` (the night sky from NASA SVS Deep Star Maps, 2048 x 2048 px, 110 degrees across). Put them in `asteroid-miner-sprites/sprites/scenery/` (or `res://sprites/scenery/`). `SpriteLibrary.sky_texture(layer)` also looks in effects, bodies, backgrounds and sky, in that order. If a file is missing, that layer is simply not drawn (no error).
+- `OrbitView._update_sky()` (called every frame from `_process`): two Sprite2D nodes in a Node2D (`show_behind_parent`, first child, so behind the body sprites), additive blending (`BLEND_MODE_ADD`), linear filtering. Brightness: `modulate` = (b, b, b, 1) with b = `milkyway_brightness` / `star_brightness`; 0 hides the layer.
+- ASSUMPTIONS (images not seen by the code author): opaque or black background (additive blending makes black invisible), square, any pixel size (the larger side is scaled to 1.5 x the larger screen side), no rotation (screen right = ecliptic longitude 0, up = 90 degrees, as the map's x and y).
+- Parallax: shift = -strength x (camera distance from the Sun in AU x 20 px + view drag in screen pixels x 0.05), the y axis flipped like the map, limited to 20 % of the larger screen side; plus a slight zoom of the sky: scale x clamp(1 + strength x 0.02 x log10(px per km), 0.9, 1.3). Strength 0 = fixed sky.
+- Settings screen: the note of the Parallax slider no longer says "saved only".
+
+## Step 12d2: star background, first corrections
+
+- Not run (no Godot here). Jon's 12d findings: formats and orientation of both images OK (both 2048 x 2048); the Milky Way layer had much too much grey haze; the sky shifted strongly in the last bit of zooming towards a body and the map seemed to snap sideways. Build label: "Alpha v0.1.12.d2 Testing".
+- Haze: the Milky Way layer now uses a small canvas_item shader (`OrbitView.SKY_SHADER_CODE`, `blend_add`) that subtracts a black level from each colour channel and rescales: rgb = max(texel - black, 0) / (1 - black), then times the brightness. Setting `milkyway_black_level` (default 0.10, slider "Milky Way haze cut", 0 to 0.3). Measured on the image: the dark parts have a mean of about 0.065 (noise about 0.04), the haze of the band about 0.14, the bright band up to about 0.5. The stars layer is unchanged (CanvasItemMaterial add and modulate).
+- Parallax default 0.25 (was 0.5). Note: a value already saved in user_settings.json (0.5) stays until "Reset to defaults" is used.
+- Panning: the part of the shift that follows the view offset (`cam_offset` x `cam_scale`) is cut to 10 % (`SKY_PX_PER_SCREEN_PX` 0.05 -> 0.005) and has its own slider `pan_parallax` (0 to 1, default 1, "Background movement when panning"). Probable cause of the snap sideways: `cam_offset` is counted from `cam_body`, so the term jumps when the camera changes its body while zooming in or out. The distance-from-Sun term and the slight zoom of the sky (both scaled by the parallax strength) are continuous and unchanged.
+
+## Step 12d3: sky panning scaled by the zoom within the body's context
+
+- Not run (no Godot here). Jon: the snap and the strong shift come from the panning part being based on the view's position relative to the whole solar system, not on the current view context. Build label: "Alpha v0.1.12.d3 Testing".
+- `OrbitView._context_zoom_fraction()`: 0 when the camera is zoomed out as far as the view of its body goes (`SNAP_OUT x _fit_scale(cam_body)`, beyond which the parent's view takes over; for the Sun `MIN_SUN_FIT x _fit_scale("sun")`), 1 at the highest zoom (`MAX_PX_PER_KM`), in between by the logarithm of the scale. `_update_sky` multiplies the panning part of the shift (view offset x scale, slider `pan_parallax`, 10 % constant of 12d2) by it. The distance-from-Sun term and the zoom of the sky are unchanged.
+- Caveat: when the camera changes its body during a zoom (Moon -> Earth), the fraction is counted for the new body and can jump a little; the effect is small because it is multiplied by the already small panning constant.
+
+## Step 12d4: sky follows the map movement seen on the screen (no more Sun-distance term)
+
+- Not run (no Godot here). Jon on 12d3: panning in the Earth, Moon and Ceres views, even fully zoomed in, moved the sky not at all (the movement was still linked to the solar system map), and the snap when switching between the solar and a local view was still significant. Build label: "Alpha v0.1.12.d4 Testing".
+- Cause: the shift was a function of the camera's absolute position (the AU term, 20 px per AU, jumps when the camera body changes and is large for the outer planets) and of `cam_offset x cam_scale x 0.005`, which is only a fraction of a pixel for a local pan.
+- New: `OrbitView._update_sky` keeps an accumulated shift `sky_shift`. Every frame the movement of the camera relative to the body it is on (`cam_offset` in the frame of the previous frame's body, `body_rel_to(sky_prev_body, cam_body) + cam_offset - sky_prev_offset`, so a change of the camera's body does not move it, and neither does the orbital motion of the body being followed) is turned into the screen movement of the map (km x `cam_scale`, y flipped) and a part of it is added to the sky: `parallax_strength x pan_parallax x SKY_PAN_FACTOR (0.3) x _context_zoom_fraction()`, per frame at most 5 % of the larger screen side, the total limited to +-20 %. So a drag of 500 px at full zoom with strength 0.25 moves the sky about 37 px (strength 1: 150 px). Nothing in the formula depends on the position in the solar system, so there is no snap when the context changes (only later movement is weighted differently).
+- Removed: the distance-from-Sun term (`SKY_PX_PER_AU`) and the old offset term. The slight zoom of the sky (strength x 0.02 x log10 of the scale, 0.9 to 1.3) is kept and continuous. Strength 0 = fixed sky.
+
+## Step 12e: Credits screen (and new defaults)
+
+- Not run (no Godot here). 12d4 was tested OK by Jon on 24 Nov (no snapping, even with the parallax at maximum). New scene `credits.tscn` with `scripts/credits_view.gd`: a new class/scene, so open the project with Edit first. Build label: "Alpha v0.1.12.e Testing".
+- New defaults (Jon): `milkyway_black_level` 0.20 (was 0.10), `parallax_strength` 0.5 (was 0.25). Values already saved in user_settings.json stay until "Reset to defaults".
+- Menu: a "Credits" button (third entry, after Settings) opens the Credits screen: title, a scroll list of credits (heading and text) and a Back button to the menu. The credits are the constant `CREDITS` in `credits_view.gd` (add new entries there). For now one entry: NASA, for the star background (Deep Star Maps of the Scientific Visualization Studio; public domain; NASA does not endorse this game). The NASA logo is not used.
+- The text follows the text size setting (`apply_text_scale`), the heading uses `text_px`.

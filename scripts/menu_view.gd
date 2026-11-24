@@ -2,11 +2,12 @@ extends Control
 ## Start menu: opens the prototype screens.
 
 const MOBILE_UI_SCALE := 2.0
-const BUILD_LABEL := "Alpha v0.1.12.a Testing"   # shown in the menu; update it with every new build
+const BUILD_LABEL := "Alpha v0.1.12.e Testing"   # shown in the menu; update it with every new build
 const ENTRIES := [
 	["Orbit map", "res://main.tscn"],
 	["Ship design", "res://ship_design.tscn"],
 	["Settings", "res://settings.tscn"],
+	["Credits", "res://credits.tscn"],
 ]
 
 
@@ -14,6 +15,8 @@ func _ready() -> void:
 	if OS.has_feature("mobile"):
 		get_window().content_scale_factor = MOBILE_UI_SCALE
 	RenderingServer.set_default_clear_color(Color(0.02, 0.02, 0.05))
+	UserSettings.apply_text_scale(self)
+	UserSettings.apply_display()
 	var centre := CenterContainer.new()
 	centre.set_anchors_preset(Control.PRESET_FULL_RECT)
 	add_child(centre)
@@ -24,7 +27,7 @@ func _ready() -> void:
 	var title := Label.new()
 	title.text = "Space Logistics Game"
 	title.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	title.add_theme_font_size_override("font_size", 32)
+	title.add_theme_font_size_override("font_size", UserSettings.text_px(32))
 	box.add_child(title)
 	var subtitle := Label.new()
 	subtitle.text = BUILD_LABEL

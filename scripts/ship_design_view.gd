@@ -48,6 +48,7 @@ var last_focus: Control = null
 func _ready() -> void:
 	if OS.has_feature("mobile"):
 		get_window().content_scale_factor = MOBILE_UI_SCALE
+	UserSettings.apply_text_scale(self)
 	if not _load_engines():
 		return
 	_apply_saved_design()
@@ -166,7 +167,7 @@ func _build_ui() -> void:
 func _add_heading(parent: Control, text: String) -> void:
 	var label := Label.new()
 	label.text = text
-	label.add_theme_font_size_override("font_size", 22)
+	label.add_theme_font_size_override("font_size", UserSettings.text_px(22))
 	label.add_theme_color_override("font_color", Color(0.6, 0.8, 1.0))
 	label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
 	label.custom_minimum_size = Vector2(100, 0)
@@ -192,8 +193,8 @@ func _add_slider(parent: Control, title: String, value_range: Vector2, logarithm
 	edit.virtual_keyboard_type = LineEdit.KEYBOARD_TYPE_NUMBER_DECIMAL
 	row.add_child(edit)
 	var unit_label := Label.new()
-	unit_label.text = unit
-	unit_label.custom_minimum_size = Vector2(36, 0)
+	unit_label.text = UnitFormat.display_unit(unit)   # (kg, cm and kN are lb, in and klbf with imperial units)
+	unit_label.custom_minimum_size = Vector2(44, 0)
 	row.add_child(unit_label)
 
 	var slider := HSlider.new()
@@ -204,7 +205,7 @@ func _add_slider(parent: Control, title: String, value_range: Vector2, logarithm
 	slider.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	parent.add_child(slider)
 
-	var control := {"edit": edit, "slider": slider, "range": value_range, "log": logarithmic, "value": start}
+	var control := {"edit": edit, "slider": slider, "range": value_range, "log": logarithmic, "value": start, "unit": unit}
 	slider.set_value_no_signal(_to_slider(start, control))
 	slider.value_changed.connect(func(_v: float) -> void:
 		control["value"] = _value_from_slider(control)
@@ -219,7 +220,7 @@ func _apply_text(control: Dictionary, text: String) -> void:
 	var cleaned := text.strip_edges().replace(",", ".")
 	if cleaned.is_valid_float():
 		var value_range: Vector2 = control["range"]
-		var value := clampf(cleaned.to_float(), value_range.x, value_range.y)
+		var value := clampf(UnitFormat.from_display(str(control["unit"]), cleaned.to_float()), value_range.x, value_range.y)   # (typed in the shown unit)
 		control["value"] = value
 		(control["slider"] as HSlider).set_value_no_signal(_to_slider(value, control))
 	_refresh()  # also rewrites the text box, which restores the old value if the input was not a number
@@ -283,21 +284,26 @@ func _refresh() -> void:
 	var lines: PackedStringArray = []
 	# Without cargo only the shield rides on top of the stages; the payload slider is the cargo capacity.
 	var empty_analysis := ShipCalc.analyse(stages, engines, rules, shield_mass_kg)
-	lines.append("Delta-v without payload: %s km/s" % _num(float(empty_analysis["total_dv_ms"]) / 1000.0))
-	lines.append("Delta-v with full payload (%s kg): %s km/s" % [
-			_num(payload_kg), _num(float(analysis["total_dv_ms"]) / 1000.0)])
-	lines.append("Total mass at launch: %s t" % _num(float(analysis["total_mass_kg"]) / 1000.0))
-	lines.append("Heat shield: %s t over %s m2, takes %s MJ/m2 of heat (used for aerobraking at Earth and Mars)" % [
-			_num(shield_mass_kg / 1000.0), _num(shield_area_m2), _num(AeroBraking.shield_capacity_mj_m2(shield_cm))])
+	var speed_unit := UnitFormat.speed_kms_unit()
+	var tons_unit := UnitFormat.mass_t_unit()
+	lines.append("Delta-v without payload: %s %s" % [_num(UnitFormat.speed_kms(float(empty_analysis["total_dv_ms"]) / 1000.0)), speed_unit])
+	lines.append("Delta-v with full payload (%s %s): %s %s" % [
+			_num(UnitFormat.mass_kg(payload_kg)), UnitFormat.mass_kg_unit(),
+			_num(UnitFormat.speed_kms(float(analysis["total_dv_ms"]) / 1000.0)), speed_unit])
+	lines.append("Total mass at launch: %s %s" % [_num(UnitFormat.mass_t(float(analysis["total_mass_kg"]) / 1000.0)), tons_unit])
+	lines.append("Heat shield: %s %s over %s %s, takes %s MJ/m2 of heat (used for aerobraking at Earth and Mars)" % [
+			_num(UnitFormat.mass_t(shield_mass_kg / 1000.0)), tons_unit, _num(UnitFormat.area_m2(shield_area_m2)), UnitFormat.area_unit(),
+			_num(AeroBraking.shield_capacity_mj_m2(shield_cm))])
 	for i in stages.size():
 		var result: Dictionary = analysis["stages"][i]
 		var accel := float(result["accel_start_ms2"])
 		lines.append("")
-		lines.append("Stage %d: %s km/s | dry mass %s t | start mass %s t" % [
-				i + 1, _num(float(result["dv_ms"]) / 1000.0), _num(float(result["dry_kg"]) / 1000.0),
-				_num(float(result["mass_start_kg"]) / 1000.0)])
-		lines.append("   start acceleration %s m/s2 (%s g) | burn time %s s" % [
-				_num(accel), _num(accel / ShipCalc.G0), _num(float(result["burn_time_s"]))])
+		lines.append("Stage %d: %s %s | dry mass %s %s | start mass %s %s" % [
+				i + 1, _num(UnitFormat.speed_kms(float(result["dv_ms"]) / 1000.0)), speed_unit,
+				_num(UnitFormat.mass_t(float(result["dry_kg"]) / 1000.0)), tons_unit,
+				_num(UnitFormat.mass_t(float(result["mass_start_kg"]) / 1000.0)), tons_unit])
+		lines.append("   start acceleration %s %s (%s g) | burn time %s s" % [
+				_num(UnitFormat.accel_ms2(accel)), UnitFormat.accel_unit(), _num(accel / ShipCalc.G0), _num(float(result["burn_time_s"]))])
 		if accel < float(rules["warn_start_accel_below_ms2"]):
 			lines.append("   Warning: very low acceleration, the burn takes long (the instant-burn model is only approximate)")
 		if accel / ShipCalc.G0 > float(rules["warn_start_accel_above_g"]):
@@ -305,13 +311,13 @@ func _refresh() -> void:
 	lines.append("")
 	lines.append("For comparison (approximate, from Earth orbit):")
 	for reference in REFERENCE_DV:
-		lines.append("   %s: %s km/s" % [reference[0], str(reference[1])])
+		lines.append("   %s: %s %s" % [reference[0], _num(UnitFormat.speed_kms(float(reference[1]))), speed_unit])
 	result_label.text = "\n".join(lines)
 	_save_design(stages, payload_kg, analysis, empty_analysis)
 
 
 func _update_label(control: Dictionary) -> void:
-	(control["edit"] as LineEdit).text = String.num(_value_of(control), 2)
+	(control["edit"] as LineEdit).text = String.num(UnitFormat.to_display(str(control["unit"]), _value_of(control)), 2)
 
 
 ## The on-screen keyboard (phones) covers the lower part of the screen: the bottom margin grows by its height so the

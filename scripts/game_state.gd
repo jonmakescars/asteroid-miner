@@ -381,7 +381,8 @@ static func orbit_status_text() -> String:
 			var near_altitude := ship_rel(near_id, time_jd).length() - float(bodies[near_id]["radius_km"])
 			var closing := ship_rel(near_id, time_jd + dt).length() < ship_rel(near_id, time_jd - dt).length()
 			var verb := "Approaching " if closing else "Leaving "
-			return "%s%s: altitude %s km | Speed %.2f km/s (relative to %s)" % [verb, str(bodies[near_id]["name"]), _km_text(near_altitude), near_speed, str(bodies[near_id]["name"])]
+			return "%s%s: altitude %s %s | Speed %.2f %s (relative to %s)" % [verb, str(bodies[near_id]["name"]), _km_text(near_altitude),
+					UnitFormat.length_unit(), UnitFormat.speed_kms(near_speed), UnitFormat.speed_kms_unit(), str(bodies[near_id]["name"])]
 	var frame := str(leg["parent"])
 	var body: Dictionary = bodies[frame]
 	var segment: Dictionary = leg["segment"]
@@ -404,12 +405,16 @@ static func orbit_status_text() -> String:
 	var axis_text := "circular"
 	if not OrbitControl.is_circular(periapsis, apoapsis):
 		axis_text = "%.0f deg" % fposmod(float(shown["argument_of_periapsis_deg"]), 360.0)
-	return "%s: periapsis %s km | apoapsis %s km | axis %s | altitude %s km | %s %.2f km/s" % [
+	var length_unit := UnitFormat.length_unit()
+	return "%s: periapsis %s %s | apoapsis %s %s | axis %s | altitude %s %s | %s %.2f %s" % [
 			("Orbit around " if leg["kind"] == "orbit" else "Flight around ") + str(body["name"]),
-			_km_text(periapsis), _km_text(apoapsis), axis_text, _km_text(altitude), speed_name, speed]
+			_km_text(periapsis), length_unit, _km_text(apoapsis), length_unit, axis_text, _km_text(altitude), length_unit,
+			speed_name, UnitFormat.speed_kms(speed), UnitFormat.speed_kms_unit()]
 
 
+## A distance given in km, in the unit of the Units setting (the unit itself is added by the caller).
 static func _km_text(value: float) -> String:
+	value = UnitFormat.length(value)
 	return "%.1f" % value if absf(value) < 10000.0 else thousands(value)
 
 

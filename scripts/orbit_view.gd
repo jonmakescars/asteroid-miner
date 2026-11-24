@@ -96,6 +96,25 @@ var auto_frame := ""            # the body the "auto" view currently shows (see 
 var destination_ids: Array = []  # what the destination picker currently offers
 var picker_origin := ""         # the body the picker was filled for
 
+const AU_KM := 149597870.7
+const SKY_LAYERS: Array = [["sky_milkyway", "milkyway_brightness"], ["sky_stars", "star_brightness"]]
+const SKY_COVER := 1.5             # the sky image is scaled to cover this many times the larger screen side (room for the parallax shift)
+const SKY_PAN_FACTOR := 0.3         # the sky moves this fraction of the screen movement of the map (at strength 1, panning slider 1, fully zoomed in)
+const SKY_SHADER_CODE := """
+shader_type canvas_item;
+render_mode blend_add;
+uniform float brightness = 1.0;
+uniform float black_level = 0.1;
+void fragment() {
+	vec3 rgb = max(texture(TEXTURE, UV).rgb - vec3(black_level), vec3(0.0)) / (1.0 - black_level);
+	COLOR = vec4(rgb * brightness, 1.0);
+}
+"""
+const SKY_MAX_SHIFT := 0.2         # the shift never exceeds this fraction of the larger screen side
+var sky_shift := Vector2.ZERO        # the sky's shift from the screen centre (px)
+var sky_prev_body := ""            # the camera of the last frame: its body ...
+var sky_prev_offset := Vector2.ZERO # ... and its offset from it (km)
+var sky_nodes: Array = []          # [Sprite2D, brightness setting name] per sky layer; behind everything else
 var sprite_layer: Node2D        # the body sprites; drawn behind this control's own drawing (lines, names, the ship)
 var sprite_nodes: Dictionary = {}    # sprite key -> Sprite2D
 var current_scene := ""         # the scene being drawn
@@ -153,6 +172,8 @@ func _ready() -> void:
 	if OS.has_feature("mobile"):
 		get_window().content_scale_factor = MOBILE_UI_SCALE
 	RenderingServer.set_default_clear_color(Color(0.02, 0.02, 0.05))
+	UserSettings.apply_text_scale(self)
+	UserSettings.apply_display()
 	if not GameState.load_data():
 		set_process(false)
 		return
@@ -227,18 +248,18 @@ func _build_ui() -> void:
 			return
 		altitude_label.text = "Periapsis altitude:"
 		if altitude_dragging:
-			altitude_spin.set_value_no_signal(value)
+			altitude_spin.set_value_no_signal(value * UnitFormat.length_factor())
 		else:
 			_apply_aero(aero_check.button_pressed, int(passes_slider.value), value))
 	aero_row.add_child(altitude_slider)
 	altitude_plus = _add_button(aero_row, "+", func() -> void: _nudge_altitude(0.1))
 	altitude_spin = SpinBox.new()
 	altitude_spin.step = 0.1
-	altitude_spin.suffix = "km"
+	altitude_spin.suffix = UnitFormat.length_unit()
 	altitude_spin.custom_minimum_size = Vector2(120, 40)
 	altitude_spin.value_changed.connect(func(value: float) -> void:
 		if not syncing_aero:
-			_apply_aero(aero_check.button_pressed, int(passes_slider.value), value, true))
+			_apply_aero(aero_check.button_pressed, int(passes_slider.value), value / UnitFormat.length_factor(), true))
 	aero_row.add_child(altitude_spin)
 	_add_button(aero_row, "Auto", _on_aero_auto)
 	orbit_row = bar.add_row()
@@ -263,7 +284,7 @@ func _build_ui() -> void:
 	warning_label = Label.new()
 	warning_label.size_flags_horizontal = Control.SIZE_EXPAND_FILL
 	warning_label.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	warning_label.add_theme_color_override("font_color", Color(1.0, 0.55, 0.3))
+	warning_label.add_theme_color_override("font_color", UserSettings.colour("warning"))
 	bar.box.add_child(warning_label)
 	info_label = RichTextLabel.new()   # rich text so that single lines can be coloured
 	info_label.bbcode_enabled = true
@@ -1004,7 +1025,7 @@ func _skip_to_departure() -> void:
 
 func _on_refuel() -> void:
 	var amount := GameState.refuel()
-	message = "Refuelled %s kg." % GameState.thousands(amount) if amount > 0.0 else "Nothing to refuel."
+	message = "Refuelled %s %s." % [GameState.thousands(UnitFormat.mass_kg(amount)), UnitFormat.mass_kg_unit()] if amount > 0.0 else "Nothing to refuel."
 
 
 ## Copies the plan's aerobraking settings to the controls.
@@ -1018,9 +1039,9 @@ func _sync_aero() -> void:
 		altitude_slider.min_value = float(aero["band_lo"])
 		altitude_slider.max_value = maxf(float(aero["band_hi"]), float(aero["band_lo"]) + 0.1)
 		altitude_slider.set_value_no_signal(float(aero["h_km"]))
-		altitude_spin.min_value = float(aero["h_min_km"])
-		altitude_spin.max_value = float(aero["h_max_km"])
-		altitude_spin.set_value_no_signal(float(aero["h_km"]))
+		altitude_spin.min_value = float(aero["h_min_km"]) * UnitFormat.length_factor()
+		altitude_spin.max_value = float(aero["h_max_km"]) * UnitFormat.length_factor()
+		altitude_spin.set_value_no_signal(float(aero["h_km"]) * UnitFormat.length_factor())
 		passes_label.text = "Passes: %d" % int(aero["n"])
 		# Without aerobraking the passes and the altitude do not apply: grey them out.
 		passes_slider.editable = enabled
@@ -1034,7 +1055,7 @@ func _sync_aero() -> void:
 
 
 func _nudge_altitude(delta_km: float) -> void:
-	_apply_aero(aero_check.button_pressed, int(passes_slider.value), altitude_spin.value + delta_km, true)
+	_apply_aero(aero_check.button_pressed, int(passes_slider.value), altitude_spin.value / UnitFormat.length_factor() + delta_km, true)
 
 
 func _apply_aero(enabled: bool, passes: int, altitude_km: float, recenter := false) -> void:
@@ -1070,7 +1091,7 @@ func _on_aero_auto() -> void:
 
 func _on_buy() -> void:
 	var amount := GameState.buy_propellant()
-	message = "Bought %s kg of propellant for %s EUR." % [GameState.thousands(amount),
+	message = "Bought %s %s of propellant for %s EUR." % [GameState.thousands(UnitFormat.mass_kg(amount)), UnitFormat.mass_kg_unit(),
 			GameState.thousands(amount * GameState.propellant_price_eur_per_kg)] if amount > 0.0 else "Nothing to buy."
 
 
@@ -1145,13 +1166,14 @@ func _process(delta: float) -> void:
 		GameState.lost_event = {}
 		lost_overlay = ShipLostOverlay.new()
 		add_child(lost_overlay)
-		lost_overlay.play(str(event["text"]), bool(event["burn"]))
+		lost_overlay.play(str(event["text"]), bool(event["burn"]) and UserSettings.flag("animations"))
 	_update_auto_frame()
 	_update_context_zoom()
 	_update_camera(delta)
 	if picker_origin != _picker_key():
 		_fill_destinations(_selected_target_id())
 	_update_ui()
+	_update_sky()
 	queue_redraw()
 
 
@@ -1223,10 +1245,12 @@ func _span_text(days: float) -> String:
 
 
 func _fuel_text() -> String:
-	return "%s kg (%.2f km/s) of %s kg (%.2f km/s)" % [
-			GameState.thousands(GameState.ship_fuel_kg), GameState.dv_left_kms(),
-			GameState.thousands(GameState.ship_fuel_capacity_kg),
-			GameState.dv_for_fuel(GameState.ship_fuel_capacity_kg)]
+	var mass_unit := UnitFormat.mass_kg_unit()
+	var speed_unit := UnitFormat.speed_kms_unit()
+	return "%s %s (%.2f %s) of %s %s (%.2f %s)" % [
+			GameState.thousands(UnitFormat.mass_kg(GameState.ship_fuel_kg)), mass_unit, UnitFormat.speed_kms(GameState.dv_left_kms()), speed_unit,
+			GameState.thousands(UnitFormat.mass_kg(GameState.ship_fuel_capacity_kg)), mass_unit,
+			UnitFormat.speed_kms(GameState.dv_for_fuel(GameState.ship_fuel_capacity_kg)), speed_unit]
 
 
 ## A heat load (MJ/m2) as a share of the full capacity of the heat shield.
@@ -1246,10 +1270,11 @@ func _aero_lines() -> PackedStringArray:
 	elif not aero["enabled"]:
 		lines.append("Aerobraking off: propulsive capture. %s" % aero.get("message", ""))
 	elif aero["outcome"] != "ok":
-		lines.append("Aerobraking: %d passes at %.1f km. Heat %s" % [int(aero["n"]), float(aero["h_km"]), _heat_share_text(float(aero["heat"]))])
+		lines.append("Aerobraking: %d passes at %.1f %s. Heat %s" % [int(aero["n"]), UnitFormat.length(float(aero["h_km"])), UnitFormat.length_unit(), _heat_share_text(float(aero["heat"]))])
 	else:
-		lines.append("Aerobraking: %d passes at %.1f km, %s in total, final burns %.0f m/s" % [
-				int(aero["n"]), float(aero["h_km"]), _span_text(float(aero["days"])), float(aero["final_dv"]) * 1000.0])
+		lines.append("Aerobraking: %d passes at %.1f %s, %s in total, final burns %.0f %s" % [
+				int(aero["n"]), UnitFormat.length(float(aero["h_km"])), UnitFormat.length_unit(), _span_text(float(aero["days"])),
+				UnitFormat.speed_ms(float(aero["final_dv"]) * 1000.0), UnitFormat.speed_ms_unit()])
 		lines.append("Heat %s | peak %.1f g | peak heating %.1f MW/m2" % [
 				_heat_share_text(float(aero["heat"])), float(aero["peak_g"]), float(aero["peak_flux"])])
 	if aero.get("enabled", false) and aero.has("shield_after"):
@@ -1309,15 +1334,17 @@ func _info_text() -> String:
 		var names: PackedStringArray = []
 		for type_id in GameState.cargo:
 			names.append(str(GameState.facility_types[type_id]["name"]))
-		lines.append("Cargo (%s of %s kg): %s" % [GameState.thousands(GameState.cargo_mass_kg()),
-				GameState.thousands(GameState.ship_payload_kg), ", ".join(names)])
+		lines.append("Cargo (%s of %s %s): %s" % [GameState.thousands(UnitFormat.mass_kg(GameState.cargo_mass_kg())),
+				GameState.thousands(UnitFormat.mass_kg(GameState.ship_payload_kg)), UnitFormat.mass_kg_unit(), ", ".join(names)])
 	for id in GameState.facilities:
 		var facility: Dictionary = GameState.facilities[id]
 		if facility["kind"] != "propellant_plant":
 			lines.append(str(facility["name"]))
 			continue
-		lines.append("%s: %s kg of %s kg (+%s kg/day)" % [facility["name"], GameState.thousands(float(facility["stock_kg"])),
-				GameState.thousands(float(facility["storage_capacity_kg"])), GameState.thousands(GameState.facility_output_per_day(facility))])
+		var plant_unit := UnitFormat.mass_kg_unit()
+		lines.append("%s: %s %s of %s %s (+%s %s/day)" % [facility["name"], GameState.thousands(UnitFormat.mass_kg(float(facility["stock_kg"]))), plant_unit,
+				GameState.thousands(UnitFormat.mass_kg(float(facility["storage_capacity_kg"]))), plant_unit,
+				GameState.thousands(UnitFormat.mass_kg(GameState.facility_output_per_day(facility))), plant_unit])
 	if plan.is_empty():
 		if message != "":
 			lines.append(message)
@@ -1336,19 +1363,20 @@ func _info_text() -> String:
 	lines.append("Arrival: %s (flight %s)" % [GameState.date_text(float(plan["t_arr"])), _span_text(float(plan["flight_days"]))])
 	if not plan["committed"] and not plan.get("midflight", false):
 		lines.append("Launch cost: %s EUR" % GameState.thousands(GameState.mission_cost_eur))
-	lines.append("Burns: departure %.2f + capture %.2f = %.2f km/s" % [
-			float(plan["dv_departure"]), float(plan["dv_arrival"]), _plan_dv_total()])
+	lines.append("Burns: departure %.2f + capture %.2f = %.2f %s" % [
+			UnitFormat.speed_kms(float(plan["dv_departure"])), UnitFormat.speed_kms(float(plan["dv_arrival"])),
+			UnitFormat.speed_kms(_plan_dv_total()), UnitFormat.speed_kms_unit()])
 	if not plan.get("orbit_change", false) and not OrbitControl.is_circular(float(plan["rp_t"]), float(plan["ra_t"])):
 		var turn_deg := AeroBraking.axis_turn_deg(plan)
 		var axis_line := "Orbit axis: %.0f deg (solar system frame), arrival aimed at %.0f deg" % [
 				fposmod(AeroBraking._axis_deg(plan), 360.0), fposmod(AeroBraking._arrival_axis(plan), 360.0)]
 		if turn_deg > 0.5:
-			axis_line += "; turning the axis by %.0f deg costs %.0f m/s (included in the capture burn)." % [turn_deg, AeroBraking.axis_turn_dv(plan) * 1000.0]
+			axis_line += "; turning the axis by %.0f deg costs %.0f %s (included in the capture burn)." % [turn_deg, UnitFormat.speed_ms(AeroBraking.axis_turn_dv(plan) * 1000.0), UnitFormat.speed_ms_unit()]
 		else:
 			axis_line += "; no turn needed."
 		lines.append(axis_line)
 	if float(plan.get("dv_circularize", 0.0)) > 0.0:
-		lines.append("The periapsis of the parking orbit points the wrong way for this departure: circularising first (%.0f m/s, included in the departure burn)." % (float(plan["dv_circularize"]) * 1000.0))
+		lines.append("The periapsis of the parking orbit points the wrong way for this departure: circularising first (%.0f %s, included in the departure burn)." % [UnitFormat.speed_ms(float(plan["dv_circularize"]) * 1000.0), UnitFormat.speed_ms_unit()])
 	lines.append_array(_aero_lines())
 	if message != "":
 		lines.append(message)
@@ -1435,7 +1463,7 @@ func _draw_map() -> void:
 	var fade_mid := 0.5 * (fade_lo + full_px)
 	var sprite_a := smoothstep(fade_lo, fade_mid, body_px)
 	var triangle_a := 1.0 - smoothstep(fade_mid, full_px, body_px)
-	if SpriteLibrary.entry(SHIP_SPRITE).is_empty():
+	if SpriteLibrary.entry(SHIP_SPRITE).is_empty() or not UserSettings.flag("ship_sprites"):   # (the setting: always the icon)
 		sprite_a = 0.0
 		triangle_a = 1.0
 	var attitude := GameState.attitude_at(time_jd)
@@ -1454,7 +1482,7 @@ func _draw_map() -> void:
 		var triangle := Color.WHITE.lerp(Color(1.0, 0.5, 0.15), float(ship_request["heat"]))   # glows orange while it heats up
 		triangle.a = triangle_a
 		draw_colored_polygon(PackedVector2Array([p + Vector2(0, -7), p + Vector2(6, 5), p + Vector2(-6, 5)]), triangle)
-	draw_string(ThemeDB.fallback_font, p + Vector2(10, 22), GameState.ship_name, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, Color.WHITE)
+	draw_string(ThemeDB.fallback_font, p + Vector2(10, 22), GameState.ship_name, HORIZONTAL_ALIGNMENT_LEFT, -1, UserSettings.map_text_px(16), Color.WHITE)
 
 
 ## More points for a line that is much bigger than the screen, so that its corners do not show.
@@ -1493,12 +1521,25 @@ func _draw_ship_orbit(half_extent: float) -> void:
 		ring.append(_to_screen(point, origin, cam_scale))
 	# It fades out with the same zoom rule as the blue lines (the size of the view of the body it orbits).
 	var zoom_fade := _too_big_fade(GameState.view_radius_km(parent_id, time_jd) * cam_scale, half_extent)
-	draw_polyline(ring, Color(0.3, 1.0, 0.4, 0.85 * smoothstep(2.0, 6.0, above_body_px) * zoom_fade), 1.5, true)
+	var ship_orbit_colour := UserSettings.colour("ship_orbit")
+	ship_orbit_colour.a = clampf(0.85 * smoothstep(2.0, 6.0, above_body_px) * zoom_fade * UserSettings.number("line_brightness"), 0.0, 1.0)
+	draw_polyline(ring, ship_orbit_colour, _lw(1.5), true)
 
 
 ## The faded colour of an orbit line, and of a marker (a body, its name).
 func _fade(colour: Color) -> Color:
-	return Color(colour.r, colour.g, colour.b, colour.a * line_alpha)
+	return Color(colour.r, colour.g, colour.b, clampf(colour.a * line_alpha * UserSettings.number("line_brightness"), 0.0, 1.0))
+
+
+## Line width times the thickness setting.
+func _lw(width: float) -> float:
+	return width * UserSettings.number("line_width")
+
+
+## The colour of the planned course (the palette decides the hue) with an opacity.
+func _course(alpha: float) -> Color:
+	var colour := UserSettings.colour("course")
+	return Color(colour.r, colour.g, colour.b, alpha)
 
 
 func _mfade(colour: Color) -> Color:
@@ -1509,12 +1550,16 @@ func _mfade(colour: Color) -> Color:
 ## centre is where the body is on the screen, px_per_km the scale.
 func _draw_scene(frame_id: String, centre: Vector2, px_per_km: float) -> void:
 	var kid_ids: Array = children[frame_id]
+	# (the orbits of moons can be switched off; the planets round the Sun stay)
+	var show_orbits := frame_id == "sun" or UserSettings.flag("show_moon_orbits")
 	for kid_id in kid_ids:
+		if not show_orbits:
+			break
 		var segment := Kepler.segment_at(bodies[kid_id]["orbit_segments"], time_jd)
 		var line := PackedVector2Array()
 		for point in Kepler.orbit_points(segment, _sample_count(float(segment["semi_major_axis_km"]) * px_per_km, _half_screen(), ORBIT_SAMPLES)):
 			line.append(_to_screen(point, centre, px_per_km))
-		draw_polyline(line, _fade(Color(1, 1, 1, 0.25)), 1.0, true)
+		draw_polyline(line, _fade(Color(1, 1, 1, 0.25)), _lw(1.0), true)
 
 	# Planned transfer path, drawn when the transfer happens around the body at the centre of the view.
 	if not plan.is_empty() and plan["frame"] == frame_id:
@@ -1522,7 +1567,7 @@ func _draw_scene(frame_id: String, centre: Vector2, px_per_km: float) -> void:
 		for i in 81:
 			var t := float(plan["t_dep"]) + float(plan["flight_days"]) * float(i) / 80.0
 			path.append(_to_screen(Kepler.position_at(plan["transfer_segment"], t), centre, px_per_km))
-		draw_polyline(path, _fade(Color(0.4, 0.9, 1.0, 0.9)), 1.5, true)
+		draw_polyline(path, _fade(_course(0.9)), _lw(1.5), true)
 	_draw_local_route(frame_id, centre, px_per_km)
 	_draw_body(frame_id, centre, px_per_km)
 	for kid_id in kid_ids:
@@ -1536,17 +1581,17 @@ func _draw_scene(frame_id: String, centre: Vector2, px_per_km: float) -> void:
 func _draw_local_route(frame_id: String, centre: Vector2, px_per_km: float) -> void:
 	if plan.is_empty():
 		return
-	var route_colour := _fade(Color(0.4, 0.9, 1.0, 0.9))
+	var route_colour := _fade(_course(0.9))
 	if str(plan["frame"]) != frame_id:
 		var transfer_leg := GameState.plan_transfer_leg(plan)
 		if not transfer_leg.is_empty():
 			var radius_km := GameState.view_radius_km(frame_id, time_jd)
 			if str(transfer_leg.get("from_body", "")) == frame_id:
-				draw_polyline(_route_points(transfer_leg, frame_id, float(plan["t_dep"]), 1.0, radius_km, centre, px_per_km), route_colour, 1.5, true)
+				draw_polyline(_route_points(transfer_leg, frame_id, float(plan["t_dep"]), 1.0, radius_km, centre, px_per_km), route_colour, _lw(1.5), true)
 			if str(transfer_leg.get("to_body", "")) == frame_id:
-				draw_polyline(_route_points(transfer_leg, frame_id, float(plan["t_arr"]), -1.0, radius_km, centre, px_per_km), route_colour, 1.5, true)
+				draw_polyline(_route_points(transfer_leg, frame_id, float(plan["t_arr"]), -1.0, radius_km, centre, px_per_km), route_colour, _lw(1.5), true)
 				if (transfer_leg.get("to_hyp", {}) as Dictionary).has("delta_out"):   # a fly-by: the way out round the body
-					draw_polyline(_route_points(transfer_leg, frame_id, float(plan["t_arr"]), 1.0, radius_km, centre, px_per_km, float(plan["t_arr"]) + 60.0), route_colour, 1.5, true)
+					draw_polyline(_route_points(transfer_leg, frame_id, float(plan["t_arr"]), 1.0, radius_km, centre, px_per_km, float(plan["t_arr"]) + 60.0), route_colour, _lw(1.5), true)
 	var captures: Array = plan.get("capture_legs", [])
 	for capture_leg in captures:
 		if str(capture_leg["parent"]) != frame_id:
@@ -1554,7 +1599,7 @@ func _draw_local_route(frame_id: String, centre: Vector2, px_per_km: float) -> v
 		var ring := PackedVector2Array()
 		for point in Kepler.orbit_points(capture_leg["segment"], _sample_count(float(capture_leg["segment"]["semi_major_axis_km"]) * px_per_km, _half_screen(), 64)):
 			ring.append(_to_screen(point, centre, px_per_km))
-		draw_polyline(ring, _fade(Color(0.4, 0.9, 1.0, 0.7 if capture_leg["kind"] == "orbit" else 0.3)), 1.0, true)
+		draw_polyline(ring, _fade(_course(0.7 if capture_leg["kind"] == "orbit" else 0.3)), _lw(1.0), true)
 
 
 ## Points of the route near one end of a transfer: sampled at growing time steps from t_origin (forwards for
@@ -1601,13 +1646,15 @@ func _draw_body(id: String, screen_position: Vector2, px_per_km: float) -> void:
 	if sprite_a < 1.0:
 		draw_circle(screen_position, radius_px, Color(colour.r, colour.g, colour.b, colour.a * (1.0 - sprite_a)))
 	if true_radius_px < RING_BELOW_PX:
-		draw_arc(screen_position, RING_RADIUS_PX, 0.0, TAU, 32, colour, 1.5, true)
+		if UserSettings.flag("show_tiny_rings"):
+			draw_arc(screen_position, RING_RADIUS_PX, 0.0, TAU, 32, colour, 1.5, true)
 		radius_px = RING_RADIUS_PX
 	var facility_count := GameState.facilities_at(id).size()
 	for n in facility_count:
 		draw_rect(Rect2(screen_position + Vector2(-radius_px - 9.0 - 9.0 * n, -radius_px - 9.0), Vector2(7, 7)), _mfade(Color(1.0, 0.6, 0.2)))
-	draw_string(ThemeDB.fallback_font, screen_position + Vector2(radius_px + 4.0, 5.0), body["name"],
-			HORIZONTAL_ALIGNMENT_LEFT, -1, 16, _mfade(Color(1, 1, 1, 0.8)))
+	if UserSettings.flag("show_body_names"):
+		draw_string(ThemeDB.fallback_font, screen_position + Vector2(radius_px + 4.0, 5.0), body["name"],
+				HORIZONTAL_ALIGNMENT_LEFT, -1, UserSettings.map_text_px(16), _mfade(Color(1, 1, 1, 0.8)))
 
 
 ## Asks for the sprites of a body (and its rings, snow, ...) and returns how opaque they are (0 when it is too small).
@@ -1661,6 +1708,92 @@ func _request_sprite(node_key: String, sprite_key: String, screen_position: Vect
 			earlier["alpha"] = alpha
 			return
 	sprite_requests[node_key] = {"sprite": sprite_key, "pos": screen_position, "scale": sprite_scale, "sun": sun_dir, "alpha": alpha, "lit": lit, "rank": scene_rank, "night_of": night_of, "tint": tint, "rot": rotation_rad, "additive": tint != Color.WHITE}
+
+
+## How far the view is zoomed in within the context of the body the camera is on: 0 = zoomed out as far as that
+## body's view goes (further out, the view of its parent takes over), 1 = zoomed in as far as possible (counted on the
+## logarithm of the scale). The sky follows the panning of the map by this fraction.
+func _context_zoom_fraction() -> float:
+	if cam_body == "" or cam_scale <= 0.0:
+		return 0.0
+	var lowest: float
+	if bodies[cam_body]["parent"] == null:
+		lowest = MIN_SUN_FIT * _fit_scale("sun")
+	else:
+		lowest = SNAP_OUT * _fit_scale(cam_body)
+	if lowest <= 0.0 or lowest >= MAX_PX_PER_KM:
+		return 0.0
+	return clampf(log(cam_scale / lowest) / log(MAX_PX_PER_KM / lowest), 0.0, 1.0)
+
+
+## The star background: the Milky Way and the stars as two additive layers behind everything, each scaled by its own
+## brightness setting and slid a little as the camera moves (parallax). Nothing is drawn when the images are missing.
+func _update_sky() -> void:
+	if sky_nodes.is_empty():
+		var created := false
+		for layer: Array in SKY_LAYERS:
+			var texture := SpriteLibrary.sky_texture(str(layer[0]))
+			if texture == null:
+				continue
+			var node := Sprite2D.new()
+			node.texture = texture
+			node.texture_filter = CanvasItem.TEXTURE_FILTER_LINEAR
+			if str(layer[0]) == "sky_milkyway":   # (the Milky Way: a shader that also cuts the grey haze)
+				var shader := Shader.new()
+				shader.code = SKY_SHADER_CODE
+				var shader_material := ShaderMaterial.new()
+				shader_material.shader = shader
+				node.material = shader_material
+			else:
+				var material := CanvasItemMaterial.new()
+				material.blend_mode = CanvasItemMaterial.BLEND_MODE_ADD
+				node.material = material
+			sky_nodes.append([node, str(layer[1])])
+			created = true
+		if not created:
+			sky_nodes.append([null, ""])   # (marks the search as done)
+		else:
+			var sky_layer := Node2D.new()
+			sky_layer.show_behind_parent = true
+			add_child(sky_layer)
+			move_child(sky_layer, 0)
+			for entry: Array in sky_nodes:
+				sky_layer.add_child(entry[0])
+	var strength := UserSettings.number("parallax_strength")
+	var larger := maxf(size.x, size.y)
+	var limit := larger * SKY_MAX_SHIFT
+	var zoom := 1.0
+	if cam_body != "" and cam_scale > 0.0 and GameState.bodies.has(cam_body):
+		# The sky follows the movement of the camera relative to the body it is on (dragging, centring, zooming to a
+		# point), seen on the screen, so it does not depend on where in the solar system the camera is. It is only
+		# a part of the screen movement of the map: strength x panning slider x SKY_PAN_FACTOR x the zoom fraction.
+		if sky_prev_body != "" and GameState.bodies.has(sky_prev_body):
+			var offset_in_old := GameState.body_rel_to(sky_prev_body, cam_body, time_jd) + cam_offset
+			var moved_km := offset_in_old - sky_prev_offset
+			var moved_px := Vector2(-moved_km.x, moved_km.y) * cam_scale   # how far the map moved on the screen
+			var part := strength * UserSettings.number("pan_parallax") * SKY_PAN_FACTOR * _context_zoom_fraction()
+			var step := moved_px * part
+			var step_limit := larger * 0.05
+			sky_shift += Vector2(clampf(step.x, -step_limit, step_limit), clampf(step.y, -step_limit, step_limit))
+			sky_shift = Vector2(clampf(sky_shift.x, -limit, limit), clampf(sky_shift.y, -limit, limit))
+		sky_prev_body = cam_body
+		sky_prev_offset = cam_offset
+		zoom = clampf(1.0 + strength * 0.02 * log(maxf(cam_scale, 1e-12)) / log(10.0), 0.9, 1.3)
+	var shift := sky_shift if strength > 0.0 else Vector2.ZERO
+	for entry: Array in sky_nodes:
+		var node: Sprite2D = entry[0]
+		if node == null:
+			continue
+		var brightness := UserSettings.number(str(entry[1]))
+		node.visible = brightness > 0.0
+		if node.material is ShaderMaterial:
+			(node.material as ShaderMaterial).set_shader_parameter("brightness", brightness)
+			(node.material as ShaderMaterial).set_shader_parameter("black_level", UserSettings.number("milkyway_black_level"))
+		else:
+			node.modulate = Color(brightness, brightness, brightness, 1.0)
+		var image_size := maxf(node.texture.get_width(), node.texture.get_height())
+		node.scale = Vector2.ONE * (larger * SKY_COVER / image_size * zoom)
+		node.position = size * 0.5 + shift
 
 
 ## Shows the requested sprites (creating the nodes the first time) and hides the rest.
@@ -1799,17 +1932,18 @@ func _apply_ship() -> void:
 	ship_node.rotation = float(ship_request["angle"])
 	ship_node.modulate = Color(1, 1, 1, float(ship_request["alpha"]))
 	var light := float(ship_request["light"])
+	var effects := UserSettings.number("effects_intensity")   # (plasma, hull glow and flame: 0 off, 1 full)
 	var lit: ShaderMaterial = ship_node.material as ShaderMaterial
 	if lit != null:
 		lit.set_shader_parameter("sun_dir", ship_request["sun"])
 		lit.set_shader_parameter("sun_strength", 1.15 * light)   # the glow layer stays as bright as it is
 		lit.set_shader_parameter("ambient", 0.05 * light)
-		lit.set_shader_parameter("heat", float(ship_request["heat"]))
+		lit.set_shader_parameter("heat", float(ship_request["heat"]) * effects)
 		lit.set_shader_parameter("heat_dir", Vector2.RIGHT.rotated(-PI * float(ship_request["retro"])))   # the way the flow comes, in the hull's own space
 	else:
 		ship_node.self_modulate = Color(light, light, light, 1.0)
 	if ship_plasma != null:
-		var heat := float(ship_request["heat"])
+		var heat := float(ship_request["heat"]) * effects
 		var tail_first := float(ship_request["retro"]) > 0.5
 		ship_plasma.rotation = PI if tail_first else 0.0   # the shock is in front: at the tail (the heat shield) when flying tail first
 		ship_plasma.position = Vector2(-ship_pivot_x + 24.0, 0.0) if tail_first else Vector2(ship_length_units - ship_pivot_x - 24.0, 0.0)
@@ -1820,7 +1954,8 @@ func _apply_ship() -> void:
 		var burn := int(ship_request["burn"])
 		var retro_now := float(ship_request["retro"])
 		# The flame only burns once the ship has turned the right way round (prograde: nose first, retrograde: tail first).
-		ship_flame.visible = (burn == 1 and retro_now < 0.05) or (burn < 0 and retro_now > 0.95) or burn == 2   # (2: the axis-turning burn, at its fixed heading)
+		ship_flame.visible = effects > 0.01 and ((burn == 1 and retro_now < 0.05) or (burn < 0 and retro_now > 0.95) or burn == 2)   # (2: the axis-turning burn, at its fixed heading)
+		ship_flame.modulate = Color(1, 1, 1, effects)
 		ship_flame.scale = Vector2(1.0 + 0.12 * sin(Time.get_ticks_msec() * 0.03), 1.0)
 
 

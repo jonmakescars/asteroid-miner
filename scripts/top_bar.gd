@@ -29,6 +29,7 @@ var date_label: Label
 var status_label: Label
 var ship_label: Label
 var orbit_label: Label
+var label_px := 0   # the font size the labels have now (the map label setting)
 
 
 ## current_scene is the path of the screen the bar sits on (its own button is left out).
@@ -120,13 +121,18 @@ func refresh() -> void:
 	var wanted := minf(box.get_combined_minimum_size().y, limit)
 	if absf(scroll.custom_minimum_size.y - wanted) > 1.0:
 		scroll.custom_minimum_size.y = wanted
+	var wanted_px := UserSettings.map_text_px(UserSettings.BASE_FONT_SIZE)
+	if wanted_px != label_px:   # (the numbers of the bar follow the map label size)
+		label_px = wanted_px
+		for label: Label in [date_label, status_label, ship_label, orbit_label]:
+			label.add_theme_font_size_override("font_size", wanted_px)
 	pause_button.text = "Resume" if GameState.paused else "Pause"
 	date_label.text = GameState.date_text(GameState.time_jd)
 	ship_label.text = "   Ship: %s" % GameState.ship_name
 	orbit_label.text = GameState.orbit_status_text()
 	if GameState.paused:
 		status_label.text = "   Paused"
-		status_label.add_theme_color_override("font_color", Color(1.0, 0.3, 0.3))
+		status_label.add_theme_color_override("font_color", UserSettings.colour("paused"))
 	else:
 		status_label.remove_theme_color_override("font_color")
 		status_label.text = "" if GameState.warp_index == 0 else "   Warp: %s" % GameState.WARP_LABELS[GameState.warp_index]
