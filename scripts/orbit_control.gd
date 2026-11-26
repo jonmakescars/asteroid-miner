@@ -1,7 +1,8 @@
 class_name OrbitControl
 extends HFlowContainer
-## A general control for an orbit around a body: periapsis altitude, apoapsis altitude and, if the orbit is
-## not circular, the angle of its axis of eccentricity (offset, in degrees).
+## A general control for an orbit around a body: periapsis altitude, apoapsis altitude, the angle of its axis of
+## eccentricity (offset, in degrees; only if the orbit is not circular) and the direction it runs in (a switch:
+## counter-clockwise, direction 1, or clockwise, direction -1).
 ##
 ## The two altitudes never conflict: lowering the apoapsis below the periapsis pulls the periapsis down
 ## with it, raising the periapsis to the apoapsis or beyond pushes the apoapsis up. In both cases they keep
@@ -11,7 +12,7 @@ extends HFlowContainer
 ## Altitudes are in km above the surface. The signal is sent when the player finishes a change: a slider is
 ## released, or a number is entered.
 
-signal orbit_changed(rp_alt_km: float, ra_alt_km: float, offset_deg: float)
+signal orbit_changed(rp_alt_km: float, ra_alt_km: float, offset_deg: float, direction: int)
 
 const EPS := 0.001            # km, the invisible gap between periapsis and apoapsis
 const CIRCULAR_BELOW := 0.0105  # a gap smaller than this (km) counts as circular
@@ -22,8 +23,10 @@ var max_alt_km := 100000.0
 var rp_alt := 400.0
 var ra_alt := 400.0 + EPS
 var offset_deg := 0.0
+var direction := 1   # 1 counter-clockwise, -1 clockwise
 
 var _syncing := false
+var _direction_switch: CheckButton
 var _rp_slider: HSlider
 var _rp_spin: SpinBox
 var _ra_slider: HSlider
@@ -66,6 +69,14 @@ func _init() -> void:
 	_rp_slider.drag_ended.connect(func(_c: bool) -> void: _commit("rp", _from_slider(_rp_slider.value)))
 	_ra_slider.drag_ended.connect(func(_c: bool) -> void: _commit("ra", _from_slider(_ra_slider.value)))
 	_offset_slider.drag_ended.connect(func(_c: bool) -> void: _commit("offset", _offset_slider.value))
+	var direction_label := Label.new()
+	direction_label.text = "Direction"
+	add_child(direction_label)
+	_direction_switch = CheckButton.new()
+	_direction_switch.custom_minimum_size = Vector2(150, 40)
+	_direction_switch.text = "counter-clockwise"
+	_direction_switch.toggled.connect(func(on: bool) -> void: _commit("dir", -1.0 if on else 1.0))
+	add_child(_direction_switch)
 	_offset_slider.min_value = -180.0
 	_offset_slider.max_value = 180.0
 	_offset_slider.step = 1.0
@@ -109,11 +120,14 @@ func setup(body_radius_km: float, max_altitude_km: float) -> void:
 
 
 ## Shows an orbit without sending the signal.
-func set_orbit(rp_alt_km: float, ra_alt_km: float, offset: float) -> void:
+func set_orbit(rp_alt_km: float, ra_alt_km: float, offset: float, way := 1) -> void:
 	rp_alt = rp_alt_km
 	ra_alt = ra_alt_km
 	offset_deg = offset
+	direction = -1 if way < 0 else 1
 	_syncing = true
+	_direction_switch.set_pressed_no_signal(direction < 0)
+	_direction_switch.text = "clockwise" if direction < 0 else "counter-clockwise"
 	_rp_spin.set_value_no_signal(rp_alt * _unit)
 	_ra_spin.set_value_no_signal(ra_alt * _unit)
 	_rp_slider.set_value_no_signal(_to_slider(rp_alt))
@@ -143,6 +157,7 @@ func _commit(which: String, value: float) -> void:
 	var rp := rp_alt
 	var ra := ra_alt
 	var offset := offset_deg
+	var way := direction
 	match which:
 		"rp":
 			rp = minf(value, max_alt_km)
@@ -156,5 +171,7 @@ func _commit(which: String, value: float) -> void:
 			ra = pair.y
 		"offset":
 			offset = value
-	set_orbit(rp, ra, offset)
-	orbit_changed.emit(rp, ra, offset)
+		"dir":
+			way = -1 if value < 0.0 else 1
+	set_orbit(rp, ra, offset, way)
+	orbit_changed.emit(rp, ra, offset, way)

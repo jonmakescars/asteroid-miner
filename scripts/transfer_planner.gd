@@ -34,17 +34,35 @@ static func circular_segment(radius_km: float, gm: float, epoch_jd: float, phase
 
 ## Orbit segment of the transfer ellipse at the departure time (the ship starts at periapsis for an
 ## outward transfer and at apoapsis for an inward one).
+## A transfer with "dir" -1 runs clockwise (see Kepler.direction: negative mean motion).
 static func transfer_segment(transfer: Dictionary, gm: float) -> Dictionary:
 	var a := float(transfer["a"])
+	var way := float(transfer.get("dir", 1))
 	return {
 		"epoch_jd": float(transfer["t_dep"]),
 		"semi_major_axis_km": a,
 		"eccentricity": float(transfer["e"]),
 		"longitude_of_ascending_node_deg": 0.0,
 		"argument_of_periapsis_deg": rad_to_deg(float(transfer["peri_longitude"])),
-		"mean_anomaly_deg": float(transfer["mean_anomaly_start_deg"]),
-		"mean_motion_deg_per_day": mean_motion_deg_per_day(gm, a),
+		"mean_anomaly_deg": float(transfer["mean_anomaly_start_deg"]) * way,
+		"mean_motion_deg_per_day": mean_motion_deg_per_day(gm, a) * way,
 	}
+
+
+## The same transfer seen in a mirror (y changed to -y), made for a transfer that was planned in the mirrored frame:
+## a ship that runs clockwise round its body is planned as one that runs counter-clockwise (its target then runs
+## clockwise), and the result is mirrored back into a clockwise transfer ("dir" -1).
+static func mirror_transfer(transfer: Dictionary) -> Dictionary:
+	if transfer.is_empty():
+		return transfer
+	var mirrored := transfer.duplicate()
+	var origin: Vector2 = transfer["origin"]
+	var target_pos: Vector2 = transfer["target_pos"]
+	mirrored["origin"] = Vector2(origin.x, -origin.y)
+	mirrored["target_pos"] = Vector2(target_pos.x, -target_pos.y)
+	mirrored["peri_longitude"] = -float(transfer["peri_longitude"])
+	mirrored["dir"] = -float(transfer.get("dir", 1))
+	return mirrored
 
 
 ## Velocity (km/s) of something following pos_fn, from a numerical derivative.
@@ -97,7 +115,10 @@ static func transfer_for_departure(gm: float, origin_fn: Callable, target_fn: Ca
 ## Transfer from the departure point at jd t_dep down to a circular orbit of radius capture_radius_km
 ## around the central body itself (for example from the Moon to Earth). There is no target to meet, so
 ## there is no launch window: the ship can leave at any time, arriving on the opposite side.
-static func transfer_to_central(gm: float, origin_fn: Callable, t_dep: float, capture_radius_km: float) -> Dictionary:
+## direction -1: a clockwise transfer (to reach a clockwise orbit): the ship is turned round at the start of a transfer that
+## goes down, where it is at the apoapsis and slowest. Going up the transfer stays counter-clockwise (the start is the
+## fast periapsis); a clockwise orbit is then reached by turning the ship round at the arrival, at the apoapsis.
+static func transfer_to_central(gm: float, origin_fn: Callable, t_dep: float, capture_radius_km: float, direction := 1) -> Dictionary:
 	var origin: Vector2 = origin_fn.call(t_dep)
 	var r1 := origin.length()
 	var r2 := capture_radius_km
@@ -120,6 +141,7 @@ static func transfer_to_central(gm: float, origin_fn: Callable, t_dep: float, ca
 		"origin": origin,
 		"target_pos": Vector2.from_angle(origin.angle() + PI) * r2,
 		"angle_error": 0.0,
+		"dir": direction if not going_up else 1,
 	}
 
 
@@ -159,7 +181,7 @@ static func departure_velocity(transfer: Dictionary) -> Vector2:
 		return transfer["v_dep"]
 	var r1 := float(transfer["r1"])
 	var v_departure := sqrt(float(transfer["gm"]) * (2.0 / r1 - 1.0 / float(transfer["a"])))
-	return (transfer["origin"] as Vector2).normalized().rotated(PI / 2.0) * v_departure
+	return (transfer["origin"] as Vector2).normalized().rotated(float(transfer.get("dir", 1)) * PI / 2.0) * v_departure
 
 
 ## The same at the end of a transfer (at the target).
@@ -169,7 +191,7 @@ static func arrival_velocity(transfer: Dictionary) -> Vector2:
 	var r2 := float(transfer["r2"])
 	var v_arrival := sqrt(float(transfer["gm"]) * (2.0 / r2 - 1.0 / float(transfer["a"])))
 	var arrival_direction := Vector2.from_angle((transfer["origin"] as Vector2).angle() + PI)
-	return arrival_direction.rotated(PI / 2.0) * v_arrival
+	return arrival_direction.rotated(float(transfer.get("dir", 1)) * PI / 2.0) * v_arrival
 
 
 static func _stumpff_c(z: float) -> float:
@@ -269,12 +291,13 @@ static func departure_dv_escape(transfer: Dictionary, origin_velocity: Vector2, 
 
 ## Direction (degrees) the periapsis of the ship's orbit around the origin body must have to leave onto the
 ## transfer: the escape hyperbola's outgoing asymptote is turned by the true anomaly acos(-1/e) from its
-## periapsis (the orbits run counter-clockwise). Used with departure_dv_escape.
-static func escape_axis_deg(transfer: Dictionary, origin_velocity: Vector2, body_gm: float, periapsis_radius_km: float) -> float:
+## periapsis (for an orbit that runs counter-clockwise, direction 1; a clockwise orbit, direction -1, is the mirror image).
+## Used with departure_dv_escape.
+static func escape_axis_deg(transfer: Dictionary, origin_velocity: Vector2, body_gm: float, periapsis_radius_km: float, direction := 1) -> float:
 	var v_inf_vector := departure_velocity(transfer) - origin_velocity
 	var v_inf := v_inf_vector.length()
 	var e := 1.0 + periapsis_radius_km * v_inf * v_inf / body_gm
-	return rad_to_deg(v_inf_vector.angle() - acos(-1.0 / e))
+	return rad_to_deg(v_inf_vector.angle() - float(direction) * acos(-1.0 / e))
 
 
 ## Burn from a parking orbit around a moon to a transfer around the Sun (the moon's planet is the
@@ -386,7 +409,11 @@ static func arrival_dv_central(transfer: Dictionary) -> float:
 ## the hyperbolic excess speed squared, or negative for an arrival on a bound orbit) into the orbit with the
 ## periapsis radius rp and the apoapsis radius ra. The burn is made at the periapsis of the target orbit; the
 ## orientation of the orbit is not part of the cost. For a circular orbit this is the usual capture burn.
-static func capture_dv(gm: float, energy: float, rp: float, ra: float) -> float:
+## reverse: the ship arrives running counter-clockwise (a transfer that cannot be aimed) but the target orbit runs
+## clockwise, so the burn turns it round: the speeds add up instead of being subtracted.
+static func capture_dv(gm: float, energy: float, rp: float, ra: float, reverse := false) -> float:
 	var arrival_speed := sqrt(maxf(2.0 * (energy + gm / rp), 0.0))
 	var orbit_speed := sqrt(2.0 * gm * ra / (rp * (rp + ra)))
+	if reverse:
+		return arrival_speed + orbit_speed
 	return absf(arrival_speed - orbit_speed)

@@ -77,8 +77,18 @@ static func _f(z: float, r1: float, r2: float, a_coef: float, sqrt_mu: float, to
 
 
 ## Orbit segment (same format as the body data) of the ellipse through position r with velocity v at epoch_jd,
-## or {} if it is not a counter-clockwise ellipse.
+## or {} if it is not an ellipse. A clockwise ellipse (r.cross(v) below zero) is the mirror image of a counter-clockwise one:
+## it is worked out for the mirrored state and then mirrored back (the axis and the mean anomaly change sign, and so does the
+## mean motion, which is how a clockwise segment is stored; see Kepler.direction).
 static func state_segment(mu: float, r: Vector2, v: Vector2, epoch_jd: float) -> Dictionary:
+	if r.cross(v) < 0.0:
+		var mirrored := state_segment(mu, Vector2(r.x, -r.y), Vector2(v.x, -v.y), epoch_jd)
+		if mirrored.is_empty():
+			return {}
+		mirrored["argument_of_periapsis_deg"] = -float(mirrored["argument_of_periapsis_deg"])
+		mirrored["mean_anomaly_deg"] = -float(mirrored["mean_anomaly_deg"])
+		mirrored["mean_motion_deg_per_day"] = -float(mirrored["mean_motion_deg_per_day"])
+		return mirrored
 	var rm := r.length()
 	var vm2 := v.length_squared()
 	var energy := 0.5 * vm2 - mu / rm
@@ -107,7 +117,7 @@ static func state_segment(mu: float, r: Vector2, v: Vector2, epoch_jd: float) ->
 ## The bodies the ship can be sent to from where it is flying: those that orbit the body it is flying around.
 static func destinations() -> Array:
 	var leg: Dictionary = GameState.legs[GameState.leg_index_at(GameState.time_jd)]
-	if leg["kind"] != "transfer":
+	if not str(leg["kind"]) in ["transfer", "aero"]:
 		return []
 	var frame := str(leg["parent"])
 	var result: Array = (GameState.children[frame] as Array).duplicate()
@@ -121,8 +131,8 @@ static func destinations() -> Array:
 static func make_plan(target_id: String, t_burn: float, target_orbit: Dictionary = {}) -> Dictionary:
 	var bodies := GameState.bodies
 	var leg: Dictionary = GameState.legs[GameState.leg_index_at(GameState.time_jd)]
-	if leg["kind"] != "transfer":
-		return {"error": "The course cannot be changed during aerobraking."}
+	if not str(leg["kind"]) in ["transfer", "aero"]:
+		return {"error": "The course cannot be changed from here."}
 	var frame := str(leg["parent"])
 	var target: Dictionary = bodies[target_id]
 	if target["parent"] != frame and target_id != frame:
@@ -143,8 +153,12 @@ static func make_plan(target_id: String, t_burn: float, target_orbit: Dictionary
 	var rp_t := float(target["radius_km"]) + pair.x
 	var ra_t := float(target["radius_km"]) + pair.y
 	var frame_radius := float(bodies[frame]["radius_km"])
+	var mid_offsets := _position_offsets(leg, t_burn)
 	if target_id == frame:
-		return _central_plan(frame, t_burn, r1, ship_velocity, mu, orbit, rp_t, ra_t)
+		var central := _central_plan(frame, t_burn, r1, ship_velocity, mu, orbit, rp_t, ra_t)
+		if not central.has("error"):
+			central["mid_offsets"] = mid_offsets
+		return central
 
 	var reference_days := PI * sqrt(pow(0.5 * (r1.length() + (target_fn.call(t_burn) as Vector2).length()), 3.0) / mu) / 86400.0
 	var best: Dictionary = {}
@@ -164,12 +178,14 @@ static func make_plan(target_id: String, t_burn: float, target_orbit: Dictionary
 		high = float(best["tof_days"]) * 1.07
 	if best.is_empty():
 		return {"error": "No course to %s was found from here." % target["name"]}
+	var target_dir := -1 if int(orbit.get("dir", 1)) < 0 else 1
 	var plan := {
 		"origin_id": frame,
 		"target_id": target_id,
 		"target_name": target["name"],
 		"frame": frame,
 		"t_dep": t_burn,
+		"orbit_dir": target_dir,   # (the arrival can be aimed: either direction costs the same)
 		"t_arr": t_burn + float(best["tof_days"]),
 		"flight_days": float(best["tof_days"]),
 		"dv_departure": float(best["dv_burn"]),
@@ -186,13 +202,27 @@ static func make_plan(target_id: String, t_burn: float, target_orbit: Dictionary
 		"dv_circularize": 0.0,
 		"arrival_energy": float(best["energy"]),
 		"capture_phase_deg": GameState.natural_capture_axis_deg(best["segment"], target_id, t_burn + float(best["tof_days"]),
-				rp_t, target_gm, float(best["energy"])) if float(best["energy"]) > 0.0 else 0.0,
+				rp_t, target_gm, float(best["energy"]), target_dir) if float(best["energy"]) > 0.0 else 0.0,
 		"gm_target": target_gm,
 		"dv_capture": float(best["dv_capture"]),
 		"midflight": true,
+		"mid_offsets": mid_offsets,
 	}
 	AeroBraking.setup_plan(plan)   # the aerobraking data, the capture legs, the outcome and the end time
 	return plan
+
+
+## Where the ship really is at t_burn, compared with the raw path of the leg (B-042): after a departure from a moon the
+## drawn course starts at the moon, while the raw transfer starts at the planet's centre. For every body's view this is the
+## difference of the two; the new leg adds it (faded out, as for any departure) so that the ship does not jump.
+static func _position_offsets(leg: Dictionary, t_burn: float) -> Dictionary:
+	var offsets := {}
+	for body_id in GameState.bodies.keys():
+		var shown: Vector2 = GameState.leg_rel_with_offsets(leg, str(body_id), t_burn)
+		var raw: Vector2 = GameState._leg_rel(leg, str(body_id), t_burn)
+		if (shown - raw).length() > 1.0:
+			offsets[str(body_id)] = shown - raw
+	return offsets
 
 
 ## A course change to a new orbit around the body the ship is flying to (for example a different periapsis on
@@ -232,10 +262,13 @@ static func _central_plan(frame: String, t_burn: float, r1: Vector2, ship_veloci
 	if tof_days <= 0.0:
 		return {"error": "No course to that orbit was found from here."}
 	var energy := -mu / (2.0 * float(segment["semi_major_axis_km"]))
-	var dv_capture := TransferPlanner.capture_dv(mu, energy, rp_t, ra_t)
+	var reverse := int(orbit.get("dir", 1)) < 0   # (the path runs counter-clockwise and cannot be aimed: a clockwise orbit needs the ship turned round)
+	var dv_capture := TransferPlanner.capture_dv(mu, energy, rp_t, ra_t, reverse)
 	var plan := {
 		"origin_id": frame,
 		"target_id": frame,
+		"orbit_dir": -1 if reverse else 1,
+		"reverse_capture": reverse,
 		"target_name": GameState.bodies[frame]["name"],
 		"frame": frame,
 		"t_dep": t_burn,

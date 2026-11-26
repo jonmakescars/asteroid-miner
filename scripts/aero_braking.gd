@@ -162,6 +162,9 @@ static func run_passes(ctx: Dictionary, h_km: float, n: int, dt: float) -> Dicti
 	var ras: Array = []
 	var status := "ok"
 	var ra := 1.0e12
+	var budget := float(ctx.get("burn_budget_kms", 0.0))   # (B-044) propellant for burns right after a pass, km/s
+	var assist := 0.0
+	var burns: Array = []
 	for _i in n:
 		var pass_result := simulate_pass(gm, float(ctx["radius"]), ctx["atmosphere"], h_km, energy,
 				float(ctx["beta"]), float(ctx["nose"]), dt)
@@ -179,10 +182,27 @@ static func run_passes(ctx: Dictionary, h_km: float, n: int, dt: float) -> Dicti
 		if ra <= 0.0:
 			status = "too_slow"
 			break
+		if _i < n - 1 and ra >= float(ctx.get("soi_km", 1.0e11)):
+			# B-044: the pass would throw the ship out of the space of the body. A short retrograde burn at the periapsis
+			# (still at the exit of the atmosphere) lowers the apoapsis so that the next pass follows, if the tanks allow it.
+			var cap_ra := maxf(0.25 * float(ctx.get("soi_km", 1.0e11)), float(ctx["ra_t"]))
+			var v_now := sqrt(maxf(2.0 * (energy + gm / rp), 0.0))
+			var energy_cap := -gm / (rp + cap_ra)
+			var v_cap := sqrt(maxf(2.0 * (energy_cap + gm / rp), 0.0))
+			var burn := v_now - v_cap
+			if burn > 0.0 and burn <= budget - assist:
+				assist += burn
+				burns.append(burn)
+				energy = energy_cap
+				ra = cap_ra
+				ras[ras.size() - 1] = cap_ra
+			else:
+				status = "escape"   # (the ship leaves the space of the body and never comes back for the next pass)
+				break
 	if status == "ok" and ra >= 1.0e11:
 		status = "escape"
 	return {"status": status, "heat": heat, "peak_g": peak_g, "peak_flux": peak_flux, "ras": ras,
-			"seconds": seconds, "ra": ra, "energy": energy}
+			"seconds": seconds, "ra": ra, "energy": energy, "burn_dv": assist, "burns": burns}
 
 
 ## How far the result is from the goal: positive = the apoapsis is still above the target (braking missing),
@@ -283,7 +303,9 @@ static func _period_days(gm: float, a_km: float) -> float:
 	return TAU * sqrt(a_km * a_km * a_km / gm) / 86400.0
 
 
-static func _ellipse(gm: float, rp: float, ra: float, epoch_jd: float, axis_deg: float, mean_anomaly_deg: float) -> Dictionary:
+## direction: 1 counter-clockwise, -1 clockwise. mean_anomaly_deg counts in the direction of travel; a clockwise segment
+## stores it (and the mean motion) with the opposite sign (see Kepler.direction).
+static func _ellipse(gm: float, rp: float, ra: float, epoch_jd: float, axis_deg: float, mean_anomaly_deg: float, direction := 1) -> Dictionary:
 	var a := 0.5 * (rp + ra)
 	return {
 		"epoch_jd": epoch_jd,
@@ -291,12 +313,64 @@ static func _ellipse(gm: float, rp: float, ra: float, epoch_jd: float, axis_deg:
 		"eccentricity": (ra - rp) / (ra + rp),
 		"longitude_of_ascending_node_deg": 0.0,
 		"argument_of_periapsis_deg": axis_deg,
-		"mean_anomaly_deg": mean_anomaly_deg,
-		"mean_motion_deg_per_day": TransferPlanner.mean_motion_deg_per_day(gm, a),
+		"mean_anomaly_deg": mean_anomaly_deg * float(direction),
+		"mean_motion_deg_per_day": TransferPlanner.mean_motion_deg_per_day(gm, a) * float(direction),
 	}
 
 
+## The direction of the orbit the plan ends in: 1 counter-clockwise, -1 clockwise.
+static func orbit_dir(plan: Dictionary) -> int:
+	return -1 if int(plan.get("orbit_dir", 1)) < 0 else 1
+
+
 # ---------------------------------------------------------------- the plan's aerobraking data
+
+## An orbit change at the body the ship is at (MissionPlanner._plan_orbit_change) can come in two variants: two propulsive
+## burns, or a burn at the apoapsis that lowers the periapsis into the atmosphere followed by aerobraking passes. The plan
+## holds both in plan["orbit_variants"] ({"propulsive": {...}, "aero": {...}}, the fields below) and switches the fields of
+## the one in use into the plan itself, so that all the other code sees an ordinary plan.
+const VARIANT_KEYS := ["t_dep", "t_arr", "flight_days", "dv_departure", "transfer_segment", "arrival_energy",
+		"capture_phase_deg", "dv_capture", "capture_anomaly"]
+
+
+## The aerobraking variant of an orbit change: the burn at the apoapsis of the current orbit (rp, ra) lowers the periapsis
+## to altitude h_km, where the passes happen half an orbit later. If the target orbit runs the other way round, the ship is
+## turned round at that burn (the speeds add up). inputs: gm, radius, rp, ra, rp_t, ra_t, t_burn, axis, old_dir, new_dir.
+static func orbit_aero_variant(inputs: Dictionary, h_km: float) -> Dictionary:
+	var gm := float(inputs["gm"])
+	var rp := float(inputs["rp"])
+	var ra := float(inputs["ra"])
+	var rp_mid := float(inputs["radius"]) + h_km
+	var t_burn := float(inputs["t_burn"])
+	var before := _speed_at_apoapsis(gm, rp, ra)
+	var after := _speed_at_apoapsis(gm, rp_mid, ra)
+	var dv := before + after if int(inputs["new_dir"]) != int(inputs["old_dir"]) else absf(after - before)
+	var half_days := _period_days(gm, 0.5 * (rp_mid + ra)) * 0.5
+	return {
+		"t_dep": t_burn,
+		"t_arr": t_burn + half_days,
+		"flight_days": half_days,
+		"dv_departure": dv,
+		"transfer_segment": _ellipse(gm, rp_mid, ra, t_burn, float(inputs["axis"]), 180.0, int(inputs["new_dir"])),
+		"arrival_energy": -gm / (rp_mid + ra),
+		"capture_phase_deg": float(inputs["axis"]),
+		"dv_capture": final_dv(gm, rp_mid, ra, float(inputs["rp_t"]), float(inputs["ra_t"])),
+		"capture_anomaly": 0.0,
+	}
+
+
+static func select_orbit_variant(plan: Dictionary, with_aerobraking: bool, h_km := -1.0) -> void:
+	if not plan.has("orbit_variants"):
+		return
+	var variants: Dictionary = plan["orbit_variants"]
+	if with_aerobraking and h_km > 0.0:
+		variants["aero"] = orbit_aero_variant(variants["aero_inputs"], h_km)   # (the periapsis the burn sets is the one of the passes)
+	var chosen: Dictionary = variants["aero"] if with_aerobraking else variants["propulsive"]
+	for key in VARIANT_KEYS:
+		var value = chosen[key]
+		plan[key] = (value as Dictionary).duplicate(true) if value is Dictionary else value
+	plan["aero_variant"] = with_aerobraking
+
 
 ## Prepares plan["aero"] for a plan made by MissionPlanner (which provides rp_t, ra_t, offset_deg,
 ## arrival_energy, capture_phase_deg, gm_target and dv_capture) and switches the suggestion on if there is one.
@@ -304,6 +378,7 @@ static func setup_plan(plan: Dictionary) -> void:
 	var target: Dictionary = GameState.bodies[plan["target_id"]]
 	var aero := {"available": false, "enabled": false, "outcome": "ok", "message": ""}
 	plan["aero"] = aero
+	select_orbit_variant(plan, false)   # (the propulsive orbit change, if this is an orbit change)
 	_use_propulsive_capture(plan)
 	if not (target.get("atmosphere") is Dictionary):
 		return
@@ -312,10 +387,20 @@ static func setup_plan(plan: Dictionary) -> void:
 		return
 	var atmosphere: Dictionary = target["atmosphere"]
 	var area := GameState.ship_shield_area_m2
-	var mass := GameState.ship_mass_after_departure(float(plan["dv_departure"]))
+	# The numbers of the aerobraking variant (an orbit change has its own departure and arrival for it), else the plan's own.
+	var work := plan
+	if plan.has("orbit_variants"):
+		work = plan.duplicate()
+		var variant: Dictionary = plan["orbit_variants"]["aero"]
+		for key in VARIANT_KEYS:
+			work[key] = variant[key]
+	var propulsive_total := float(plan["dv_departure"]) + float(plan["dv_arrival"])   # (an orbit change is compared as a whole)
+	var mass := GameState.ship_mass_after_departure(float(work["dv_departure"]))
 	var ctx := {
 		"gm": float(plan["gm_target"]), "radius": float(target["radius_km"]), "atmosphere": atmosphere,
-		"ra_t": float(plan["ra_t"]), "energy": float(plan["arrival_energy"]),
+		"ra_t": float(plan["ra_t"]), "energy": float(work["arrival_energy"]),
+		"soi_km": GameState.context_radius_km(str(plan["target_id"]), float(work["t_arr"])),
+		"burn_budget_kms": maxf(0.0, GameState.dv_left_kms() - float(work["dv_departure"])),
 		"beta": mass / (DRAG_COEFFICIENT * area), "nose": sqrt(area / PI),
 		"shield_left_mj_m2": GameState.shield_left_mj_m2(),
 		"shield_capacity_mj_m2": shield_capacity_mj_m2(GameState.ship_shield_cm),
@@ -324,13 +409,14 @@ static func setup_plan(plan: Dictionary) -> void:
 	aero["ctx"] = ctx
 	aero["h_min_km"] = float(atmosphere["min_periapsis_altitude_km"])
 	aero["h_max_km"] = interface_altitude_km(atmosphere) - 1.0
-	if float(plan["arrival_energy"]) <= -float(plan["gm_target"]) / (float(plan["rp_t"]) + float(plan["ra_t"])):
+	if float(work["arrival_energy"]) <= -float(plan["gm_target"]) / (float(plan["rp_t"]) + float(plan["ra_t"])):
 		# B-037: the arrival orbit has less energy than the target orbit (for example from a moon up to a higher orbit round
 		# its planet): aerobraking only takes energy away, so there is nothing for it to do.
 		aero["n"] = 1
 		aero["h_km"] = maxf(find_altitude(ctx, 1, SEARCH_DT), float(aero["h_min_km"]))
 		center_band(aero, float(aero["h_km"]))
 		aero["message"] = "The target orbit has more energy than the orbit the ship arrives on, so aerobraking cannot help here and the capture is propulsive. You can still switch aerobraking on."
+		aero["off_reason"] = aero["message"]
 		return
 	var suggestion := suggest(ctx)
 	if suggestion.is_empty():
@@ -338,13 +424,18 @@ static func setup_plan(plan: Dictionary) -> void:
 		aero["h_km"] = maxf(find_altitude(ctx, 1, SEARCH_DT), float(aero["h_min_km"]))
 		center_band(aero, float(aero["h_km"]))
 		aero["message"] = "The shield cannot take the heat of aerobraking with the safe margin the planner keeps (%.0f%% of the remaining shield in reserve), so the capture is propulsive. You can still switch aerobraking on." % ((1.0 - HEAT_MARGIN) * 100.0)
+		aero["off_reason"] = aero["message"]
 		return
-	var propulsive_dv := float(plan["dv_arrival"])   # (set by _use_propulsive_capture above)
+	var propulsive_dv := float(plan["dv_capture"]) + axis_turn_dv(plan)   # (the propulsive capture; the plan itself may be a fly-by without it)
 	apply(plan, true, int(suggestion["n"]), float(suggestion["h_km"]), true)
-	if bool(aero["enabled"]) and str(aero["outcome"]) == "ok" and float(plan["dv_arrival"]) >= propulsive_dv - 1.0e-6:
+	var not_cheaper := float(plan["dv_arrival"]) >= propulsive_dv - 1.0e-6
+	if plan.has("orbit_variants"):
+		not_cheaper = float(plan["dv_departure"]) + float(plan["dv_arrival"]) >= propulsive_total - 1.0e-6
+	if bool(aero["enabled"]) and str(aero["outcome"]) == "ok" and not_cheaper:
 		# B-037: suggested only when it is cheaper than the purely propulsive plan.
 		apply(plan, false, int(suggestion["n"]), float(suggestion["h_km"]), true)
 		aero["message"] = "Aerobraking would not save any propellant here, so the capture is propulsive. You can still switch aerobraking on."
+		aero["off_reason"] = aero["message"]
 
 
 ## Centres the range of the periapsis slider on altitude h_km.
@@ -442,16 +533,17 @@ static func _append_turn_leg(legs: Array, plan: Dictionary, t: float, m0_deg: fl
 	var e := (ra_t - rp_t) / (ra_t + rp_t)
 	var turn := wrapf(_axis_deg(plan) - _arrival_axis(plan), -180.0, 180.0)   # (positive: counter-clockwise)
 	var n_deg_day := TransferPlanner.mean_motion_deg_per_day(gm, 0.5 * (rp_t + ra_t))
+	var way := float(orbit_dir(plan))   # (the true anomaly counts in the direction of travel: against the angles on the screen for a clockwise orbit)
 	var best_dt := INF
 	var best_nu2 := 0.0
-	for nu1 in [turn * 0.5, turn * 0.5 + 180.0]:   # true anomaly on the old orbit at the two crossings
+	for nu1 in [way * turn * 0.5, way * turn * 0.5 + 180.0]:   # true anomaly on the old orbit at the two crossings
 		var dt := fposmod(_mean_anomaly_deg(e, nu1) - m0_deg, 360.0) / n_deg_day
 		if dt < best_dt:
 			best_dt = dt
-			best_nu2 = nu1 - turn   # (the same point seen from the new orbit)
+			best_nu2 = nu1 - way * turn   # (the same point seen from the new orbit)
 	var t_turn := t + best_dt
 	legs.append({"parent": plan["target_id"],
-			"segment": _ellipse(gm, rp_t, ra_t, t_turn, _axis_deg(plan), _mean_anomaly_deg(e, best_nu2)),
+			"segment": _ellipse(gm, rp_t, ra_t, t_turn, _axis_deg(plan), _mean_anomaly_deg(e, best_nu2), orbit_dir(plan)),
 			"t_start": t_turn, "label": "Orbit around %s" % plan["target_name"], "kind": "orbit", "axis_turn": true})
 	return t_turn
 
@@ -469,22 +561,47 @@ static func _use_propulsive_capture(plan: Dictionary) -> void:
 		# stays where it is and only the orbit changes.
 		var legs: Array = [{
 			"parent": plan["target_id"],
-			"segment": _ellipse(gm_t, rp_t, ra_t, float(plan["t_arr"]), _arrival_axis(plan), 0.0),
+			"segment": _ellipse(gm_t, rp_t, ra_t, float(plan["t_arr"]), _arrival_axis(plan), float(plan.get("capture_anomaly", 0.0)), orbit_dir(plan)),
 			"t_start": float(plan["t_arr"]),
 			"label": "Capture orbit around %s" % plan["target_name"],
 			"kind": "aero",
 		}]
-		plan["t_end"] = _append_turn_leg(legs, plan, float(plan["t_arr"]), 0.0)
+		plan["t_end"] = _append_turn_leg(legs, plan, float(plan["t_arr"]), float(plan.get("capture_anomaly", 0.0)))
 		plan["capture_legs"] = legs
 	else:
 		plan["capture_legs"] = [{
 			"parent": plan["target_id"],
-			"segment": _ellipse(gm_t, rp_t, ra_t, float(plan["t_arr"]), _axis_deg(plan), 0.0),
+			"segment": _ellipse(gm_t, rp_t, ra_t, float(plan["t_arr"]), _axis_deg(plan), float(plan.get("capture_anomaly", 0.0)), orbit_dir(plan)),
 			"t_start": float(plan["t_arr"]),
 			"label": "Orbit around %s" % plan["target_name"],
 			"kind": "orbit",
 		}]
+	plan["flyby_propulsive"] = false
 	_set_target_outcome(plan)
+	_make_propulsive_flyby(plan)
+
+
+## Step 4 (B-013): a ship with the propellant for the departure burn, but not for the capture burn, can still go.
+## It flies past the target on a hyperbola (periapsis at the target orbit's periapsis) and stays on its orbit around
+## the Sun. The capture burn is not counted any more, and the plan says so.
+static func _make_propulsive_flyby(plan: Dictionary) -> void:
+	if str(plan.get("outcome", "ok")) != "ok" or plan.get("orbit_change", false) or plan.get("committed", false):
+		return
+	if not plan.has("arrival_energy") or float(plan["arrival_energy"]) <= 0.0 or str(plan.get("frame", "")) == str(plan["target_id"]):
+		return
+	var left := GameState.dv_left_kms()
+	var dep := float(plan["dv_departure"])
+	if dep > left + 0.00001 or dep + float(plan["dv_arrival"]) <= left + 0.00001:
+		return
+	plan["flyby_propulsive"] = true
+	plan["outcome"] = "flyby"
+	plan["outcome_text"] = "Not enough propellant for the capture burn at %s (%.0f %s needed, %.0f %s left after the departure): the ship will fly past and stay on its orbit around the Sun." % [
+			plan["target_name"], UnitFormat.speed_ms(float(plan["dv_arrival"]) * 1000.0), UnitFormat.speed_ms_unit(),
+			UnitFormat.speed_ms((left - dep) * 1000.0), UnitFormat.speed_ms_unit()]
+	plan["warning"] = str(plan["outcome_text"])
+	plan["dv_arrival"] = 0.0
+	plan["capture_legs"] = []
+	plan["t_end"] = float(plan["t_arr"])
 
 
 ## Switches aerobraking on or off, or changes its passes and periapsis altitude, and recomputes the results,
@@ -492,6 +609,12 @@ static func _use_propulsive_capture(plan: Dictionary) -> void:
 ## of the periapsis slider to h_km (this also happens when h_km is outside of it).
 static func apply(plan: Dictionary, enabled: bool, n: int, h_km: float, recenter := false) -> void:
 	var aero: Dictionary = plan["aero"]
+	select_orbit_variant(plan, enabled and bool(aero["available"]), h_km)   # (only for an orbit change)
+	if plan.get("flyby_propulsive", false):
+		plan["flyby_propulsive"] = false   # (decided again below, or by _use_propulsive_capture)
+		plan["outcome"] = "ok"
+		plan["outcome_text"] = ""
+		plan["warning"] = ""
 	aero["n"] = n
 	aero["h_km"] = h_km
 	if aero["available"] and (recenter or not aero.has("band_lo") or h_km < float(aero["band_lo"]) or h_km > float(aero["band_hi"])):
@@ -499,10 +622,13 @@ static func apply(plan: Dictionary, enabled: bool, n: int, h_km: float, recenter
 	if not enabled or not aero["available"]:
 		aero["enabled"] = false
 		aero["outcome"] = "ok"
+		aero["message"] = str(aero.get("off_reason", ""))   # B-043: no message of an earlier aerobraking calculation
 		_use_propulsive_capture(plan)
 		return
 	aero["enabled"] = true
 	var ctx: Dictionary = aero["ctx"]
+	ctx["burn_budget_kms"] = maxf(0.0, GameState.dv_left_kms() - float(plan["dv_departure"]))
+	ctx["energy"] = float(plan["arrival_energy"])   # (an orbit change: the energy follows the periapsis the first burn sets)
 	var gm := float(ctx["gm"])
 	var radius := float(ctx["radius"])
 	var rp_t := float(plan["rp_t"])
@@ -510,22 +636,36 @@ static func apply(plan: Dictionary, enabled: bool, n: int, h_km: float, recenter
 	var result := run_passes(ctx, h_km, n, FINAL_DT)
 	var status := str(result["status"])
 	aero["burn_assist"] = false
+	var assist := float(result.get("burn_dv", 0.0))   # B-044: burns right after the passes that keep the ship in orbit
+	aero["assist_dv"] = assist
+	aero["assist_burns"] = result.get("burns", [])
+	var budget_short := false
 	var escape_burn := -1.0
 	var escape_needed := 0.0
+	var early_leave := false
 	if status == "escape":
 		# Still too fast after the passes: a burn after the last pass can finish the capture if the tanks hold enough
 		# delta-v. Otherwise the ship flies past (it is not lost: it keeps its orbit around the Sun).
-		escape_needed = escape_capture_dv(gm, radius + h_km, float(result["energy"]), rp_t, ra_t) + axis_turn_dv(plan)
-		var left_before_last := true   # (a ship that is still on a hyperbola after an earlier pass leaves and never comes back for the next one)
+		var soi_km := float(ctx.get("soi_km", 1.0e11))
+		var left_before_last := true   # (a ship that leaves the space of the body after an earlier pass never comes back for the next one)
 		for earlier in (result["ras"] as Array).slice(0, maxi(n - 1, 0)):
-			if float(earlier) >= 1.0e11:
+			if float(earlier) >= soi_km:
 				left_before_last = false
-		if left_before_last and escape_needed <= GameState.dv_left_kms() - float(plan["dv_departure"]):
+		if left_before_last:
+			escape_needed = escape_capture_dv(gm, radius + h_km, float(result["energy"]), rp_t, ra_t) + axis_turn_dv(plan)
+		else:
+			early_leave = true
+		if left_before_last and escape_needed + assist <= GameState.dv_left_kms() - float(plan["dv_departure"]):
 			status = "ok"
 			escape_burn = escape_needed
 			aero["burn_assist"] = true
 		else:
 			status = "flyby"
+	if status == "ok" and assist > 0.0 and escape_burn < 0.0:
+		var finishing := final_dv(gm, radius + h_km, float(result["ra"]), rp_t, ra_t) + axis_turn_dv(plan)
+		if assist + finishing > GameState.dv_left_kms() - float(plan["dv_departure"]) + 1.0e-6:
+			status = "flyby"
+			budget_short = true
 	aero["heat"] = float(result["heat"])
 	aero["peak_g"] = float(result["peak_g"])
 	aero["peak_flux"] = float(result["peak_flux"])
@@ -537,7 +677,18 @@ static func apply(plan: Dictionary, enabled: bool, n: int, h_km: float, recenter
 	aero["shield_before"] = left / capacity
 	aero["shield_after"] = clampf(left - float(result["heat"]), 0.0, left) / capacity
 	if status != "ok":
-		if status == "flyby":
+		if status == "flyby" and early_leave:
+			aero["message"] = "An early pass throws the ship out of the space of %s, so it never comes back for the next pass: it will fly past and stay on its orbit around the Sun. Lower the periapsis or add passes." % plan["target_name"]
+			plan["capture_legs"] = []
+			plan["t_end"] = float(plan["t_arr"])
+			plan["warning"] = ""
+		elif status == "flyby" and budget_short:
+			aero["message"] = "The burns after the passes (%.0f %s) and the final burns do not fit into the propellant that is left: the ship will fly past %s and stay on its orbit around the Sun. Lower the periapsis or add passes." % [
+					UnitFormat.speed_ms(assist * 1000.0), UnitFormat.speed_ms_unit(), plan["target_name"]]
+			plan["capture_legs"] = []
+			plan["t_end"] = float(plan["t_arr"])
+			plan["warning"] = ""
+		elif status == "flyby":
 			aero["message"] = "The ship is still too fast to be captured, and the propellant is not enough for a burn that captures it (%.0f %s needed after the passes): it will fly past %s and stay on its orbit around the Sun. Lower the periapsis or add passes." % [
 					UnitFormat.speed_ms(escape_needed * 1000.0), UnitFormat.speed_ms_unit(), plan["target_name"]]
 			plan["capture_legs"] = []   # the ship stays on the transfer orbit
@@ -576,27 +727,27 @@ static func apply(plan: Dictionary, enabled: bool, n: int, h_km: float, recenter
 		if last and apoapsis_too_low:
 			ra_i = ra_t   # the apoapsis is set to the target apoapsis with a burn at once
 		var period := _period_days(gm, 0.5 * (rp + ra_i))
-		legs.append({"parent": plan["target_id"], "segment": _ellipse(gm, rp, ra_i, t, phase, 0.0), "t_start": t,
+		legs.append({"parent": plan["target_id"], "segment": _ellipse(gm, rp, ra_i, t, phase, 0.0, orbit_dir(plan)), "t_start": t,
 				"label": "Aerobraking pass %d of %d" % [i + 1, n] if not last else "After aerobraking pass %d of %d" % [n, n],
 				"kind": "aero"})
 		t += period * (0.5 if last else 1.0)
 	var final_anomaly := 180.0   # the ship is at the apoapsis of the target orbit
 	if not apoapsis_too_low and absf(ra - ra_t) > 0.005 * ra_t:
-		legs.append({"parent": plan["target_id"], "segment": _ellipse(gm, rp_t, ra, t, phase, 180.0), "t_start": t,
+		legs.append({"parent": plan["target_id"], "segment": _ellipse(gm, rp_t, ra, t, phase, 180.0, orbit_dir(plan)), "t_start": t,
 				"label": "Raising the periapsis", "kind": "aero"})
 		t += _period_days(gm, 0.5 * (rp_t + ra)) * 0.5
 		final_anomaly = 0.0
 	if axis_turn_deg(plan) > 0.5:
 		# The ship is on the target-shaped orbit at the aimed axis; the axis is turned at the next crossing point.
-		legs.append({"parent": plan["target_id"], "segment": _ellipse(gm, rp_t, ra_t, t, phase, final_anomaly),
+		legs.append({"parent": plan["target_id"], "segment": _ellipse(gm, rp_t, ra_t, t, phase, final_anomaly, orbit_dir(plan)),
 				"t_start": t, "label": "Capture orbit around %s" % plan["target_name"], "kind": "aero"})
 		t = _append_turn_leg(legs, plan, t, final_anomaly)
 	else:
-		legs.append({"parent": plan["target_id"], "segment": _ellipse(gm, rp_t, ra_t, t, _axis_deg(plan), final_anomaly),
+		legs.append({"parent": plan["target_id"], "segment": _ellipse(gm, rp_t, ra_t, t, _axis_deg(plan), final_anomaly, orbit_dir(plan)),
 				"t_start": t, "label": "Orbit around %s" % plan["target_name"], "kind": "orbit"})
 	plan["capture_legs"] = legs
 	aero["entry_times"] = entry_times
-	plan["dv_arrival"] = final_burn
+	plan["dv_arrival"] = final_burn + assist
 	plan["t_end"] = t
 	aero["days"] = t - float(plan["t_arr"])
 	_set_target_outcome(plan)

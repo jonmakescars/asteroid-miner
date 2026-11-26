@@ -100,7 +100,7 @@ var picker_origin := ""         # the body the picker was filled for
 const AU_KM := 149597870.7
 const SKY_LAYERS: Array = [["sky_milkyway", "milkyway_brightness"], ["sky_stars", "star_brightness"]]
 const SKY_COVER := 1.5             # the sky image is scaled to cover this many times the larger screen side (room for the parallax shift)
-const SKY_PAN_FACTOR := 0.3         # the sky moves this fraction of the screen movement of the map (at strength 1, panning slider 1, fully zoomed in)
+const SKY_PAN_RATE := 0.1           # the sky moves this fraction of the screen movement of the map (at strength 1 and panning slider 1), in every view
 const SKY_SHADER_CODE := """
 shader_type canvas_item;
 render_mode blend_add;
@@ -113,8 +113,11 @@ void fragment() {
 """
 const SKY_MAX_SHIFT := 0.2         # the shift never exceeds this fraction of the larger screen side
 var sky_shift := Vector2.ZERO        # the sky's shift from the screen centre (px)
-var sky_prev_body := ""            # the camera of the last frame: its body ...
-var sky_prev_offset := Vector2.ZERO # ... and its offset from it (km)
+var sky_origin_body := ""            # B-049/B-050: where the view was last centred (a body and an offset from it, km) ...
+var sky_origin_offset := Vector2.ZERO # ... the shift of the sky is the displacement of the view from there
+var sky_last_km := Vector2.ZERO      # the displacement shown in the last frame (km)
+var sky_anim_d0 := Vector2.ZERO      # the displacement when the running zoom began (km); it fades out with the zoom
+var sky_last_anim_t := -1.0          # anim_t of the last frame while a zoom ran (-1: none), to see when a new zoom begins
 var sky_nodes: Array = []          # [Sprite2D, brightness setting name] per sky layer; behind everything else
 var sprite_layer: Node2D        # the body sprites; drawn behind this control's own drawing (lines, names, the ship)
 var sprite_nodes: Dictionary = {}    # sprite key -> Sprite2D
@@ -130,6 +133,7 @@ var ship_pivot_x := 0.0
 var ship_length_units := 0.0
 var ship_request: Dictionary = {}
 var ship_angle := 0.0
+var flips_seen := 0             # B-047: turn-round burns the ship has passed (see GameState.attitude_at)
 var retro_shown := 0.0          # how far round the ship is now (0 nose first, 1 tail first); follows the plan's attitude at the turning rate
 var retro_jd := -1.0
 var fixed_shown := 0.0         # the same for the turn to the fixed heading of the axis-turning burn (0 along the course, 1 at the burn heading)
@@ -919,10 +923,11 @@ func _make_plan(keep_aero_off: bool) -> void:
 
 
 ## The player changed the target orbit: remember it for this destination and plan again.
-func _on_target_orbit_changed(rp_alt_km: float, ra_alt_km: float, offset_deg: float) -> void:
+func _on_target_orbit_changed(rp_alt_km: float, ra_alt_km: float, offset_deg: float, direction: int) -> void:
 	if plan.is_empty() or plan["committed"]:
 		return
-	GameState.target_orbits[_selected_target_id()] = {"rp_alt_km": rp_alt_km, "ra_alt_km": ra_alt_km, "offset_deg": offset_deg}
+	GameState.target_orbits[_selected_target_id()] = {"rp_alt_km": rp_alt_km, "ra_alt_km": ra_alt_km, "offset_deg": offset_deg,
+			"dir": direction}
 	_make_plan(true)
 
 
@@ -932,7 +937,7 @@ func _sync_orbit_control() -> void:
 	var target: Dictionary = bodies[plan["target_id"]]
 	var orbit: Dictionary = plan["target_orbit"]
 	orbit_control.setup(float(target["radius_km"]), GameState.max_orbit_altitude_km(str(plan["target_id"])))
-	orbit_control.set_orbit(float(orbit["rp_alt_km"]), float(orbit["ra_alt_km"]), float(orbit["offset_deg"]))
+	orbit_control.set_orbit(float(orbit["rp_alt_km"]), float(orbit["ra_alt_km"]), float(orbit["offset_deg"]), int(orbit.get("dir", 1)))
 
 
 ## Launches; if the plan will end badly (crash, burn-up, too slow, escape) the player must confirm first.
@@ -1264,6 +1269,27 @@ func _heat_share_text(heat: float) -> String:
 	return "%.0f%% of the shield capacity" % (100.0 * heat / capacity)
 
 
+## One line about the direction of the target orbit when it is not the usual one (the direction of the body's rotation), or
+## when it costs extra because the ship has to be turned round.
+func _direction_line() -> String:
+	var way := int(plan.get("orbit_dir", 1))
+	var target_name := str(plan["target_name"])
+	if plan.get("orbit_change", false):
+		if way == int(plan.get("origin_dir", way)):
+			return ""
+		return "Orbit direction: turning the ship round to run %s costs extra delta-v at the apoapsis, where the ship is slowest (included in the burns)." % ("clockwise" if way < 0 else "counter-clockwise")
+	if plan.get("reverse_capture", false):
+		return "Orbit direction: clockwise. The ship climbs to the apoapsis and is turned round there, as part of the capture burn (included). Aerobraking is still possible."
+	if way < 0 and not bool(plan.get("aimable", true)) and str(plan.get("frame", "")) != str(plan["origin_id"]):
+		return "Orbit direction: clockwise. The ship leaves %s the other way round, so the turn-round is part of the departure burn, at the apoapsis of the transfer (included). The capture is a normal one." % GameState.bodies[plan["origin_id"]]["name"]
+	if way != GameState.natural_orbit_dir(str(plan["target_id"])):
+		return "Orbit direction: %s, against the rotation of %s. The ship passes %s on the other side; the cost of the arrival is the same." % [
+				"clockwise" if way < 0 else "counter-clockwise", target_name, target_name]
+	if int(plan.get("origin_dir", 1)) < 0 and str(plan.get("frame", "")) == str(plan["origin_id"]):
+		return "The parking orbit runs clockwise: the departure burn is the same as from a counter-clockwise orbit, but the transfer is mirrored, so the launch window is different, and the ship meets %s head-on, which makes the capture there more expensive (included)." % str(plan["target_name"])
+	return ""
+
+
 func _aero_lines() -> PackedStringArray:
 	var lines: PackedStringArray = []
 	var aero: Dictionary = plan.get("aero", {})
@@ -1278,6 +1304,9 @@ func _aero_lines() -> PackedStringArray:
 		lines.append("Aerobraking: %d passes at %.1f %s, %s in total, final burns %.0f %s" % [
 				int(aero["n"]), UnitFormat.length(float(aero["h_km"])), UnitFormat.length_unit(), _span_text(float(aero["days"])),
 				UnitFormat.speed_ms(float(aero["final_dv"]) * 1000.0), UnitFormat.speed_ms_unit()])
+		if float(aero.get("assist_dv", 0.0)) > 0.0:
+			lines.append("Burns right after the passes keep the ship in orbit round the target: %.0f %s in total (propulsive and aerobraking combined)." % [
+					UnitFormat.speed_ms(float(aero["assist_dv"]) * 1000.0), UnitFormat.speed_ms_unit()])
 		lines.append("Heat %s | peak %.1f g | peak heating %.1f MW/m2" % [
 				_heat_share_text(float(aero["heat"])), float(aero["peak_g"]), float(aero["peak_flux"])])
 	if aero.get("enabled", false) and aero.has("shield_after"):
@@ -1368,9 +1397,12 @@ func _info_text() -> String:
 	lines.append("Arrival: %s (flight %s)" % [GameState.date_text(float(plan["t_arr"])), _span_text(float(plan["flight_days"]))])
 	if not plan["committed"] and not plan.get("midflight", false):
 		lines.append("Launch cost: %s EUR" % GameState.thousands(GameState.mission_cost_eur))
-	lines.append("Burns: departure %.2f + capture %.2f = %.2f %s" % [
-			UnitFormat.speed_kms(float(plan["dv_departure"])), UnitFormat.speed_kms(float(plan["dv_arrival"])),
-			UnitFormat.speed_kms(_plan_dv_total()), UnitFormat.speed_kms_unit()])
+	if plan.get("flyby_propulsive", false):
+		lines.append("Burns: departure %.2f %s (no capture burn: fly-by)" % [UnitFormat.speed_kms(float(plan["dv_departure"])), UnitFormat.speed_kms_unit()])
+	else:
+		lines.append("Burns: departure %.2f + capture %.2f = %.2f %s" % [
+				UnitFormat.speed_kms(float(plan["dv_departure"])), UnitFormat.speed_kms(float(plan["dv_arrival"])),
+				UnitFormat.speed_kms(_plan_dv_total()), UnitFormat.speed_kms_unit()])
 	if not plan.get("orbit_change", false) and not OrbitControl.is_circular(float(plan["rp_t"]), float(plan["ra_t"])):
 		var turn_deg := AeroBraking.axis_turn_deg(plan)
 		var axis_line := "Orbit axis: %.0f deg (solar system frame), arrival aimed at %.0f deg" % [
@@ -1380,6 +1412,9 @@ func _info_text() -> String:
 		else:
 			axis_line += "; no turn needed."
 		lines.append(axis_line)
+	var way_line := _direction_line()
+	if way_line != "":
+		lines.append(way_line)
 	if float(plan.get("dv_circularize", 0.0)) > 0.0:
 		lines.append("The periapsis of the parking orbit points the wrong way for this departure: circularising first (%.0f %s, included in the departure burn)." % [UnitFormat.speed_ms(float(plan["dv_circularize"]) * 1000.0), UnitFormat.speed_ms_unit()])
 	lines.append_array(_aero_lines())
@@ -1472,6 +1507,13 @@ func _draw_map() -> void:
 		sprite_a = 0.0
 		triangle_a = 1.0
 	var attitude := GameState.attitude_at(time_jd)
+	var flips := int(attitude["flips"])
+	if flips != flips_seen:
+		# B-047: a turn-round burn reverses the velocity under the ship, which keeps pointing where it pointed: nose first becomes
+		# tail first or the other way round at once, so that the drawn heading does not change.
+		if retro_jd >= 0.0 and (flips - flips_seen) % 2 != 0:
+			retro_shown = 1.0 - retro_shown
+		flips_seen = flips
 	var retro := _turn_towards(float(attitude["retro"]))
 	var heading := ship_angle + PI * retro   # nose first, turning to tail first for retrograde burns and aerobraking
 	var fixed_weight := _turn_towards(float(attitude["fixed"]), true)   # (the same turning rate as for every other turn)
@@ -1776,20 +1818,28 @@ func _update_sky() -> void:
 	var limit := larger * SKY_MAX_SHIFT
 	var zoom := 1.0
 	if cam_body != "" and cam_scale > 0.0 and GameState.bodies.has(cam_body):
-		# The sky follows the movement of the camera relative to the body it is on (dragging, centring, zooming to a
-		# point), seen on the screen, so it does not depend on where in the solar system the camera is. It is only
-		# a part of the screen movement of the map: strength x panning slider x SKY_PAN_FACTOR x the zoom fraction.
-		if sky_prev_body != "" and GameState.bodies.has(sky_prev_body):
-			var offset_in_old := GameState.body_rel_to(sky_prev_body, cam_body, time_jd) + cam_offset
-			var moved_km := offset_in_old - sky_prev_offset
-			var moved_px := Vector2(-moved_km.x, moved_km.y) * cam_scale   # how far the map moved on the screen
-			var part := strength * UserSettings.number("pan_parallax") * SKY_PAN_FACTOR * _context_zoom_fraction()
-			var step := moved_px * part
-			var step_limit := larger * 0.05
-			sky_shift += Vector2(clampf(step.x, -step_limit, step_limit), clampf(step.y, -step_limit, step_limit))
-			sky_shift = Vector2(clampf(sky_shift.x, -limit, limit), clampf(sky_shift.y, -limit, limit))
-		sky_prev_body = cam_body
-		sky_prev_offset = cam_offset
+		# B-049/B-050: the shift of the sky is the displacement of the view from the place where it was last centred on a body
+		# (a body and an offset from it, so it does not matter which body the camera is counted from), times a fixed rate. It
+		# is zero while the view is centred, moving back moves the sky back, and a zoom to another body fades the displacement
+		# out in step with the zoom, so nothing jumps when the zoom ends.
+		var displacement := Vector2.ZERO
+		if anim_target != "":
+			if sky_last_anim_t < 0.0 or anim_t < sky_last_anim_t:
+				sky_anim_d0 = sky_last_km   # a zoom (or a new one) begins: from what is shown now
+			sky_last_anim_t = anim_t
+			displacement = sky_anim_d0 * (1.0 - smoothstep(0.0, 1.0, clampf(anim_t, 0.0, 1.0)))
+		else:
+			if sky_last_anim_t >= 0.0 or not free_camera or sky_origin_body == "" or not GameState.bodies.has(sky_origin_body):
+				# a zoom just ended, or the view is centred (following a body or the ship): this is the new origin
+				sky_last_anim_t = -1.0
+				sky_origin_body = cam_body
+				sky_origin_offset = cam_offset
+			else:
+				displacement = GameState.body_rel_to(sky_origin_body, cam_body, time_jd) + cam_offset - sky_origin_offset
+		sky_last_km = displacement
+		var rate := strength * UserSettings.number("pan_parallax") * SKY_PAN_RATE
+		var wanted := Vector2(-displacement.x, displacement.y) * cam_scale * rate   # (the map moves against the camera)
+		sky_shift = Vector2(clampf(wanted.x, -limit, limit), clampf(wanted.y, -limit, limit))
 		zoom = clampf(1.0 + strength * 0.02 * log(maxf(cam_scale, 1e-12)) / log(10.0), 0.9, 1.3)
 	var shift := sky_shift if strength > 0.0 else Vector2.ZERO
 	for entry: Array in sky_nodes:

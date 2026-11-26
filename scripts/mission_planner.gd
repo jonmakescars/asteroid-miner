@@ -37,7 +37,8 @@ static func destinations(origin_id: String) -> Array:
 ## The default target orbit of a body: circular, at the body's default altitude (as altitudes above the surface).
 static func default_target_orbit(target_id: String) -> Dictionary:
 	var altitude := float(GameState.bodies[target_id]["default_orbit_altitude_km"])
-	return {"rp_alt_km": altitude, "ra_alt_km": altitude + OrbitControl.EPS, "offset_deg": 0.0}
+	return {"rp_alt_km": altitude, "ra_alt_km": altitude + OrbitControl.EPS, "offset_deg": 0.0,
+			"dir": GameState.natural_orbit_dir(target_id)}
 
 
 ## Plans the next departure from the orbit orbit_segment around origin_id to target_id, not before t_start,
@@ -57,11 +58,14 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 	var origin_apoapsis := float(orbit_segment["semi_major_axis_km"]) * (1.0 + float(orbit_segment["eccentricity"]))
 	var origin_circular := OrbitControl.is_circular(origin_orbit_radius, origin_apoapsis)
 	var dv_circularize := 0.0
+	var origin_dir := Kepler.direction(orbit_segment)   # (1 the ship runs counter-clockwise round the origin, -1 clockwise)
 	var orbit := default_target_orbit(target_id)
 	if target_id == origin_id:   # changing the orbit around the body the ship is at: start from the current orbit
 		orbit = {"rp_alt_km": origin_orbit_radius - float(target["radius_km"]),
-				"ra_alt_km": origin_apoapsis - float(target["radius_km"]), "offset_deg": 0.0}
+				"ra_alt_km": origin_apoapsis - float(target["radius_km"]), "offset_deg": 0.0, "dir": origin_dir}
 	orbit.merge(target_orbit, true)
+	var target_dir := -1 if int(orbit.get("dir", 1)) < 0 else 1
+	orbit["dir"] = target_dir
 	var pair := OrbitControl.normalise(float(orbit["rp_alt_km"]), float(orbit["ra_alt_km"]), "rp")
 	orbit["rp_alt_km"] = pair.x
 	orbit["ra_alt_km"] = pair.y
@@ -85,7 +89,7 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 		# Down the gravity well's other side: to a moon of the body we orbit. The ship can leave from any
 		# point of its orbit, so the search runs over its orbit period.
 		frame = origin_id
-		var period_days := 360.0 / float(orbit_segment["mean_motion_deg_per_day"])
+		var period_days := 360.0 / absf(float(orbit_segment["mean_motion_deg_per_day"]))
 		var origin_fn := func(t: float) -> Vector2: return Kepler.position_at(orbit_segment, t)
 		# The ship meets the moon's position again only after a synodic period, which can be several ship
 		# orbits when the ship's orbit period is close to the moon's: search at least a bit more than that.
@@ -94,8 +98,20 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 		var rate_difference := absf(1.0 / period_days - 1.0 / target_period)
 		var synodic_days := MAX_ORBIT_SEARCH_PERIODS * period_days if rate_difference < 1.0e-9 else 1.0 / rate_difference
 		horizon = minf(maxf(horizon, 1.2 * synodic_days), MAX_ORBIT_SEARCH_PERIODS * period_days)
-		transfer = TransferPlanner.find_window(origin_gm, origin_fn, target_fn, t_start,
-				horizon, period_days / 180.0)
+		if origin_dir < 0:
+			# A ship in a clockwise orbit leaves clockwise (the same burn as from a counter-clockwise orbit): the transfer is
+			# planned in the mirror, where the ship runs counter-clockwise and the moon clockwise, and mirrored back. The
+			# launch window is a different one, and the ship meets the moon head-on (the capture there costs more).
+			var mirrored_origin := func(t: float) -> Vector2:
+				var p: Vector2 = origin_fn.call(t)
+				return Vector2(p.x, -p.y)
+			var mirrored_target := func(t: float) -> Vector2:
+				var p: Vector2 = target_fn.call(t)
+				return Vector2(p.x, -p.y)
+			transfer = TransferPlanner.mirror_transfer(TransferPlanner.find_window(origin_gm, mirrored_origin, mirrored_target,
+					t_start, horizon, period_days / 180.0))
+		else:
+			transfer = TransferPlanner.find_window(origin_gm, origin_fn, target_fn, t_start, horizon, period_days / 180.0)
 		if transfer.is_empty():
 			return {"error": "No launch window found."}
 		dv_departure = TransferPlanner.departure_dv_bound(transfer, origin_gm)
@@ -106,11 +122,11 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 		# From a moon to its own planet: no window, the ship can leave at once.
 		frame = target_id
 		var origin_fn := func(t: float) -> Vector2: return GameState.body_rel(origin_id, t)
-		transfer = TransferPlanner.transfer_to_central(target_gm, origin_fn, t_start, capture_radius)
+		transfer = TransferPlanner.transfer_to_central(target_gm, origin_fn, t_start, capture_radius, target_dir)
 		var origin_velocity := TransferPlanner.velocity_kms(origin_fn, t_start)
 		dv_departure = TransferPlanner.departure_dv_escape(transfer, origin_velocity, origin_gm, origin_orbit_radius)
 		if not origin_circular and origin_apoapsis - origin_orbit_radius >= NEARLY_CIRCULAR * origin_apoapsis:
-			var needed_axis := TransferPlanner.escape_axis_deg(transfer, origin_velocity, origin_gm, origin_orbit_radius)
+			var needed_axis := TransferPlanner.escape_axis_deg(transfer, origin_velocity, origin_gm, origin_orbit_radius, origin_dir)
 			var turn := absf(wrapf(float(orbit_segment["argument_of_periapsis_deg"]) - needed_axis, -180.0, 180.0))
 			if turn > AXIS_TOLERANCE_DEG:
 				# The periapsis points the wrong way: circularise at the apoapsis first, then leave from there.
@@ -139,7 +155,7 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 		var origin_velocity := TransferPlanner.velocity_kms(origin_fn, float(transfer["t_dep"]))
 		dv_departure = TransferPlanner.departure_dv_escape(transfer, origin_velocity, origin_gm, origin_orbit_radius)
 		if not origin_circular and origin_apoapsis - origin_orbit_radius >= NEARLY_CIRCULAR * origin_apoapsis:
-			var needed_axis := TransferPlanner.escape_axis_deg(transfer, origin_velocity, origin_gm, origin_orbit_radius)
+			var needed_axis := TransferPlanner.escape_axis_deg(transfer, origin_velocity, origin_gm, origin_orbit_radius, origin_dir)
 			var turn := absf(wrapf(float(orbit_segment["argument_of_periapsis_deg"]) - needed_axis, -180.0, 180.0))
 			if turn > AXIS_TOLERANCE_DEG:
 				# The periapsis points the wrong way: circularise at the apoapsis first, then leave from there.
@@ -201,12 +217,16 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 	else:
 		return {"error": "No route to %s from here yet." % target["name"]}
 
-	dv_arrival = TransferPlanner.capture_dv(target_gm, arrival_energy, rp_t, ra_t)
+	# A transfer that cannot be aimed (from a moon to its planet) is turned round where the ship is slowest: going down, at
+	# the departure from the moon (the transfer itself runs clockwise, see transfer_to_central); going up, at the arrival,
+	# at the apoapsis of the transfer. An aimed arrival passes the target on either side for the same cost.
+	var reverse_capture := not aimable and target_dir < 0 and int(transfer.get("dir", 1)) > 0
+	dv_arrival = TransferPlanner.capture_dv(target_gm, arrival_energy, rp_t, ra_t, reverse_capture)
 	if aimable and arrival_energy > 0.0:
 		# The capture point is where the ship really arrives (passing on the side that gives a counter-clockwise
 		# orbit), not a fixed direction; no mirroring of the approach is needed.
 		capture_phase_deg = GameState.natural_capture_axis_deg(TransferPlanner.transfer_segment(transfer, float(transfer["gm"])),
-				target_id, float(transfer["t_arr"]), rp_t, target_gm, arrival_energy)
+				target_id, float(transfer["t_arr"]), rp_t, target_gm, arrival_energy, target_dir)
 	var plan := {
 		"origin_id": origin_id,
 		"target_id": target_id,
@@ -231,6 +251,9 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 		"capture_phase_deg": capture_phase_deg,
 		"gm_target": target_gm,
 		"dv_capture": dv_arrival,
+		"orbit_dir": target_dir,
+		"origin_dir": origin_dir,
+		"reverse_capture": reverse_capture,
 	}
 	if not moon_escape.is_empty():
 		plan["moon_escape"] = moon_escape
@@ -257,9 +280,14 @@ static func _transfer(gm: float, origin_fn: Callable, target_fn: Callable, t_sta
 
 ## A change of the ship's orbit around the body it is at (a new periapsis, apoapsis and axis): two burns at the
 ## apsides of the current orbit, as in AeroBraking.final_dv. The first burn waits for the apsis it needs.
+## A change of direction (the target orbit runs the other way round) turns the ship round at the burn at the higher of the two
+## apoapsides, where the ship is slowest: the speeds before and after add up there instead of being subtracted.
 static func _plan_orbit_change(body_id: String, segment: Dictionary, t_start: float, orbit: Dictionary,
 		rp_t: float, ra_t: float) -> Dictionary:
 	var body: Dictionary = GameState.bodies[body_id]
+	var old_dir := Kepler.direction(segment)
+	var new_dir := -1 if int(orbit.get("dir", old_dir)) < 0 else 1
+	var flip := new_dir != old_dir
 	var gm := float(body["gm_km3_s2"])
 	var a := float(segment["semi_major_axis_km"])
 	var e := float(segment["eccentricity"])
@@ -267,20 +295,26 @@ static func _plan_orbit_change(body_id: String, segment: Dictionary, t_start: fl
 	var ra := a * (1.0 + e)
 	var axis := float(segment["argument_of_periapsis_deg"])
 	var circular := OrbitControl.is_circular(rp, ra)
-	var raise_apoapsis_first := ra < rp_t   # then burn at the periapsis, otherwise at the apoapsis
+	# B-046: the order of the two burns. The apoapsis is raised first (burn at the periapsis) when the target periapsis lies above
+	# the current apoapsis, and also when the direction changes and the target apoapsis is higher than the current one: the ship
+	# is then turned round in the second burn, at the higher apoapsis, where it is slowest. Otherwise the first burn is at the
+	# current apoapsis (which is then the higher one, or the same).
+	var raise_apoapsis_first := ra < rp_t or (flip and ra_t > ra + 1.0)
 	var t_burn := t_start
 	var middle_axis := axis
+	var way := float(old_dir)   # (a clockwise orbit runs its angles backwards)
+	var motion_abs := absf(float(segment["mean_motion_deg_per_day"]))
 	if not circular:
 		var target_anomaly := 0.0 if raise_apoapsis_first else 180.0
 		var anomaly := float(segment["mean_anomaly_deg"]) + float(segment["mean_motion_deg_per_day"]) * (t_start - float(segment["epoch_jd"]))
-		t_burn = t_start + fposmod(target_anomaly - anomaly, 360.0) / float(segment["mean_motion_deg_per_day"])
+		t_burn = t_start + fposmod(way * (target_anomaly - anomaly), 360.0) / motion_abs
 	elif not OrbitControl.is_circular(rp_t, ra_t):
 		# From a circular orbit to one with an axis: the new periapsis (and apoapsis) must lie on the target axis, so
 		# the first burn happens where the new periapsis (higher apoapsis) or apoapsis (lower periapsis) will be.
 		middle_axis = float(orbit["offset_deg"])   # (the axis is universal, not counted from the old orbit)
 		var burn_angle := middle_axis if raise_apoapsis_first else middle_axis + 180.0
 		var angle_now := rad_to_deg(Kepler.position_at(segment, t_start).angle())
-		t_burn = t_start + fposmod(burn_angle - angle_now, 360.0) / float(segment["mean_motion_deg_per_day"])
+		t_burn = t_start + fposmod(way * (burn_angle - angle_now), 360.0) / motion_abs
 	else:
 		# Circular to circular: there is no axis, so the burn happens where the ship is, and the new ellipse touches
 		# the old orbit there (periapsis at the ship for a higher apoapsis, apoapsis at the ship for a lower periapsis).
@@ -289,16 +323,23 @@ static func _plan_orbit_change(body_id: String, segment: Dictionary, t_start: fl
 		middle_axis = axis
 	var middle_rp := rp if raise_apoapsis_first else rp_t
 	var middle_ra := ra_t if raise_apoapsis_first else ra
-	var middle := AeroBraking._ellipse(gm, middle_rp, middle_ra, t_burn, middle_axis, 0.0 if raise_apoapsis_first else 180.0)
+	# The first burn happens at the periapsis when the apoapsis is raised first (no turn round: the middle ellipse still runs the old way)
+	# and at the apoapsis otherwise (the ship is turned round there, so the middle ellipse runs the new way).
+	var middle_dir := old_dir if raise_apoapsis_first else new_dir
+	var middle := AeroBraking._ellipse(gm, middle_rp, middle_ra, t_burn, middle_axis, 0.0 if raise_apoapsis_first else 180.0, middle_dir)
 	var half_days := TAU * sqrt(pow(0.5 * (middle_rp + middle_ra), 3.0) / gm) / 86400.0 * 0.5
 	var dv_first: float
 	var dv_second: float
 	if raise_apoapsis_first:
 		dv_first = absf(AeroBraking._speed_at_periapsis(gm, rp, ra_t) - AeroBraking._speed_at_periapsis(gm, rp, ra))
 		dv_second = absf(AeroBraking._speed_at_apoapsis(gm, rp_t, ra_t) - AeroBraking._speed_at_apoapsis(gm, rp, ra_t))
+		if flip:
+			dv_second = AeroBraking._speed_at_apoapsis(gm, rp_t, ra_t) + AeroBraking._speed_at_apoapsis(gm, rp, ra_t)
 	else:
 		dv_first = absf(AeroBraking._speed_at_apoapsis(gm, rp_t, ra) - AeroBraking._speed_at_apoapsis(gm, rp, ra))
 		dv_second = absf(AeroBraking._speed_at_periapsis(gm, rp_t, ra_t) - AeroBraking._speed_at_periapsis(gm, rp_t, ra))
+		if flip:
+			dv_first = AeroBraking._speed_at_apoapsis(gm, rp_t, ra) + AeroBraking._speed_at_apoapsis(gm, rp, ra)
 	var t_departure := t_burn
 	var t_arrival := t_burn + half_days
 	if dv_first < 0.0001:
@@ -307,7 +348,7 @@ static func _plan_orbit_change(body_id: String, segment: Dictionary, t_start: fl
 		# one the ship reaches first.
 		t_arrival = t_burn - half_days if t_burn - half_days >= t_start else t_burn + half_days
 		t_departure = maxf(t_arrival - 1.0 / 86400.0, t_start)
-		middle = AeroBraking._ellipse(gm, middle_rp, middle_ra, t_arrival, middle_axis, 180.0 if raise_apoapsis_first else 0.0)
+		middle = AeroBraking._ellipse(gm, middle_rp, middle_ra, t_arrival, middle_axis, 180.0 if raise_apoapsis_first else 0.0, middle_dir)
 	var plan := {
 		"origin_id": body_id,
 		"target_id": body_id,
@@ -333,11 +374,14 @@ static func _plan_orbit_change(body_id: String, segment: Dictionary, t_start: fl
 		"gm_target": gm,
 		"dv_capture": dv_second,
 		"orbit_change": true,
+		"orbit_dir": new_dir,
+		"origin_dir": old_dir,
 	}
-	# An orbit change never uses aerobraking, and its capture is the second burn at the other apsis.
+	# The propulsive orbit change: its capture is the second burn at the other apsis.
 	plan["aero"] = {"available": false, "enabled": false, "outcome": "ok", "message": ""}
-	AeroBraking._use_propulsive_capture(plan)
 	var final_anomaly := 180.0 if raise_apoapsis_first else 0.0
+	plan["capture_anomaly"] = final_anomaly
+	AeroBraking._use_propulsive_capture(plan)
 	if circular:
 		plan["dv_arrival"] = dv_second   # from a circular orbit the axis needs no extra burn
 	if float(plan["dv_arrival"]) < 0.0001:
@@ -349,16 +393,32 @@ static func _plan_orbit_change(body_id: String, segment: Dictionary, t_start: fl
 		plan["dv_arrival"] = 0.0
 		plan["capture_legs"][0]["t_start"] = plan["t_arr"]
 		final_anomaly = 0.0 if raise_apoapsis_first else 180.0   # the ship is where the burn was
+		plan["capture_anomaly"] = final_anomaly
 	var legs: Array = plan["capture_legs"]
 	legs[0]["t_start"] = plan["t_arr"]
 	if AeroBraking.axis_turn_deg(plan) > 0.5:
 		# The two burns lead to the target shape at the axis of the old orbit. The axis is then turned by the radial burn
 		# at the point where the two orbits cross (as after an arrival): the ship coasts there from where the burns ended.
-		legs[0]["segment"] = AeroBraking._ellipse(gm, rp_t, ra_t, float(plan["t_arr"]), AeroBraking._arrival_axis(plan), final_anomaly)
+		legs[0]["segment"] = AeroBraking._ellipse(gm, rp_t, ra_t, float(plan["t_arr"]), AeroBraking._arrival_axis(plan), final_anomaly, new_dir)
 		legs.resize(1)
 		plan["t_end"] = AeroBraking._append_turn_leg(legs, plan, float(plan["t_arr"]), final_anomaly)
 	else:
-		legs[0]["segment"] = AeroBraking._ellipse(gm, rp_t, ra_t, float(plan["t_arr"]), AeroBraking._axis_deg(plan), final_anomaly)
+		legs[0]["segment"] = AeroBraking._ellipse(gm, rp_t, ra_t, float(plan["t_arr"]), AeroBraking._axis_deg(plan), final_anomaly, new_dir)
+	# Lowering the apoapsis in an atmosphere can also be done with aerobraking: a burn at the current apoapsis lowers the
+	# periapsis into the atmosphere, the passes lower the apoapsis, and burns at the end set the target orbit. The plan holds
+	# both variants and AeroBraking.setup_plan picks the cheaper one (the player can switch).
+	var atmosphere = body.get("atmosphere")
+	if atmosphere is Dictionary and ra_t < ra * 0.995 and not raise_apoapsis_first:
+		var radius := float(body["radius_km"])
+		var h_mid := 0.5 * (float(atmosphere["min_periapsis_altitude_km"]) + AeroBraking.interface_altitude_km(atmosphere) - 1.0)
+		if radius + h_mid < rp:
+			var inputs := {"gm": gm, "radius": radius, "rp": rp, "ra": ra, "rp_t": rp_t, "ra_t": ra_t,
+					"t_burn": t_burn, "axis": middle_axis, "old_dir": old_dir, "new_dir": new_dir}
+			var keep := {}
+			for key in AeroBraking.VARIANT_KEYS:
+				keep[key] = plan[key].duplicate(true) if plan[key] is Dictionary else plan[key]
+			plan["orbit_variants"] = {"propulsive": keep, "aero": AeroBraking.orbit_aero_variant(inputs, h_mid), "aero_inputs": inputs}
+			AeroBraking.setup_plan(plan)
 	return plan
 
 

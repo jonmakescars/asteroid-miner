@@ -74,5 +74,12 @@ static func orbit_points(segment: Dictionary, count: int = 128) -> PackedVector2
 	return points
 
 
+## The direction an orbit segment runs: 1 counter-clockwise (the direction of the bodies' orbits), -1 clockwise. A clockwise
+## orbit is the same ellipse with a negative mean motion: the mean anomaly then runs backwards, so position_at needs
+## no change. (The mean anomaly of a clockwise segment counts the same way, against the direction of travel.)
+static func direction(segment: Dictionary) -> int:
+	return -1 if float(segment["mean_motion_deg_per_day"]) < 0.0 else 1
+
+
 static func _periapsis_longitude(segment: Dictionary) -> float:
 	return deg_to_rad(float(segment["longitude_of_ascending_node_deg"]) + float(segment["argument_of_periapsis_deg"]))

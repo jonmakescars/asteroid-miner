@@ -366,6 +366,8 @@ static func advance(delta: float) -> void:
 			if str(running.get("outcome", "ok")) == "flyby":
 				# Too fast to be captured, and no burn could capture it: the ship flies past and goes on around the Sun.
 				message = "Fly-by of %s: the ship was too fast to be captured and flies on around the Sun." % running["target_name"]
+				if running.get("flyby_propulsive", false):
+					message = "Fly-by of %s: the propellant was not enough for the capture burn, so the ship flies on around the Sun. Plan a course change to try again." % running["target_name"]
 				if aero.get("enabled", false):
 					message += " " + _take_aerobraking_effects(aero)
 			elif str(running.get("outcome", "ok")) != "ok":
@@ -425,6 +427,8 @@ static func orbit_status_text() -> String:
 	var axis_text := "circular"
 	if not OrbitControl.is_circular(periapsis, apoapsis):
 		axis_text = "%.0f deg" % fposmod(float(shown["argument_of_periapsis_deg"]), 360.0)
+	if leg["kind"] != "transfer" and Kepler.direction(segment) < 0:
+		axis_text += ", clockwise"
 	var length_unit := UnitFormat.length_unit()
 	return "%s: periapsis %s %s | apoapsis %s %s | axis %s | altitude %s %s | %s %.2f %s" % [
 			("Orbit around " if leg["kind"] == "orbit" else "Flight around ") + str(body["name"]),
@@ -489,8 +493,9 @@ static func _loss_time() -> float:
 	if captures.is_empty():
 		return -1.0
 	var segment: Dictionary = captures[captures.size() - 1]["segment"]
-	var to_periapsis_deg := fposmod(-float(segment["mean_anomaly_deg"]), 360.0)
-	return float(segment["epoch_jd"]) + to_periapsis_deg / float(segment["mean_motion_deg_per_day"])
+	var way := float(Kepler.direction(segment))   # (a clockwise segment counts its mean anomaly the other way)
+	var to_periapsis_deg := fposmod(-way * float(segment["mean_anomaly_deg"]), 360.0)
+	return float(segment["epoch_jd"]) + to_periapsis_deg / absf(float(segment["mean_motion_deg_per_day"]))
 
 
 ## Records that the ship was lost: time stops and the screen shows the loss (with the burning-up animation
@@ -531,7 +536,7 @@ static func _ensure_decay(leg: Dictionary) -> void:
 	var t_start := maxf(time_jd, float(leg["t_start"]))
 	var n_rate := float(segment["mean_motion_deg_per_day"])
 	var m_deg := float(segment["mean_anomaly_deg"]) + n_rate * (t_start - float(segment["epoch_jd"]))
-	var t_pass := t_start + fposmod(-m_deg, 360.0) / n_rate
+	var t_pass := t_start + fposmod(-signf(n_rate) * m_deg, 360.0) / absf(n_rate)
 	var energy := -gm / (2.0 * a)
 	var passes := 0
 	var steps: Array = []
@@ -606,7 +611,7 @@ static func _decay_orbit() -> void:
 		segment["mean_anomaly_deg"] = 0.0
 		segment["semi_major_axis_km"] = a_new
 		segment["eccentricity"] = (ra - rp) / (ra + rp)
-		segment["mean_motion_deg_per_day"] = TransferPlanner.mean_motion_deg_per_day(gm, a_new)
+		segment["mean_motion_deg_per_day"] = TransferPlanner.mean_motion_deg_per_day(gm, a_new) * float(Kepler.direction(segment))
 		message = "The orbit is decaying: " + text
 
 
@@ -755,7 +760,7 @@ static func ship_in_transit() -> bool:
 static func planner_available(focus_id: String) -> bool:
 	var body := ship_body()
 	if body == "":
-		return legs[leg_index_at(time_jd)]["kind"] == "transfer"   # a course change can be planned in flight
+		return str(legs[leg_index_at(time_jd)]["kind"]) in ["transfer", "aero"]   # a course change can be planned in flight (also on the legs of a capture)
 	return body == focus_id or bodies[body]["parent"] == focus_id or not plan.is_empty()
 
 
@@ -897,6 +902,13 @@ static func deploy_kit() -> String:
 
 # ---------------------------------------------------------------- positions on rails
 
+## The direction a ship orbits a body in when it follows the body's rotation: 1 counter-clockwise, -1 clockwise. That is the
+## cheapest direction (for landing and taking off), so it is the default of the target orbit. A body can say otherwise in
+## its data with "rotation_direction": -1 (a retrograde spinner); all the bodies so far spin counter-clockwise.
+static func natural_orbit_dir(body_id: String) -> int:
+	return -1 if int(bodies[body_id].get("rotation_direction", 1)) < 0 else 1
+
+
 ## Position (km) of a body relative to its parent.
 static func body_rel(id: String, jd: float) -> Vector2:
 	var segments: Array = bodies[id]["orbit_segments"]
@@ -957,14 +969,15 @@ static func _add_xy(a: Array, b: Array, factor: float) -> Array:
 ## counter-clockwise, the direction of the body's rotation. The angle between the incoming direction and the
 ## periapsis follows from the hyperbola with periapsis radius rp and the energy of the arrival (km2/s2).
 ## segment is the transfer orbit (in the frame of the target's parent), t_arr the arrival time.
-static func natural_capture_axis_deg(segment: Dictionary, target_id: String, t_arr: float, rp: float, gm: float, energy: float) -> float:
+## direction -1: the ship passes on the other side and sweeps round the target clockwise (the mirror image).
+static func natural_capture_axis_deg(segment: Dictionary, target_id: String, t_arr: float, rp: float, gm: float, energy: float, direction := 1) -> float:
 	var h := 0.1   # days
 	var before := _transfer_rel_target_xy(segment, target_id, t_arr - h)
 	var after := _transfer_rel_target_xy(segment, target_id, t_arr + h)
 	var incoming := atan2(float(after[1]) - float(before[1]), float(after[0]) - float(before[0]))
 	var e := 1.0 + rp * 2.0 * energy / gm
 	var slope := sqrt(maxf(e * e - 1.0, 0.0))
-	return rad_to_deg(incoming - atan2(slope, 1.0))
+	return rad_to_deg(incoming - float(direction) * atan2(slope, 1.0))
 
 
 ## Position of the transfer orbit relative to the target body as 64-bit floats [x, y].
@@ -1089,17 +1102,18 @@ static func _moon_far_course(leg: Dictionary, jd: float) -> Vector2:
 
 ## A hyperbolic escape orbit round a body (gravity mu) that passes through the point (relative to the body) with the
 ## given velocity direction, with the speed at infinity v_inf; the periapsis time is worked out from t_dep (B-030).
-static func _escape_hyperbola(mu: float, point: Vector2, velocity: Vector2, v_inf: float, t_dep: float) -> Dictionary:
+## direction: 1 if the ship runs counter-clockwise round the body, -1 if clockwise (the hyperbola is the mirror image).
+static func _escape_hyperbola(mu: float, point: Vector2, velocity: Vector2, v_inf: float, t_dep: float, direction := 1) -> Dictionary:
 	var radius := point.length()
 	var v_h2 := v_inf * v_inf + 2.0 * mu / radius
-	var cos_gamma := clampf(point.cross(velocity) / maxf(radius * velocity.length(), 1.0e-12), 0.0001, 1.0)
+	var cos_gamma := clampf(float(direction) * point.cross(velocity) / maxf(radius * velocity.length(), 1.0e-12), 0.0001, 1.0)
 	var ang_mom := radius * sqrt(v_h2) * cos_gamma
 	var p_semi := ang_mom * ang_mom / mu
 	var e_h := sqrt(1.0 + v_inf * v_inf * ang_mom * ang_mom / (mu * mu))
 	var nu := acos(clampf((p_semi / radius - 1.0) / e_h, -1.0, 1.0))
 	if velocity.dot(point) < 0.0:
 		nu = -nu   # still on the way in: the periapsis is ahead
-	var hyp := _hyperbola(mu, p_semi / (1.0 + e_h), point.angle() - nu, v_inf)
+	var hyp := _hyperbola(mu, p_semi / (1.0 + e_h), point.angle() - float(direction) * nu, v_inf, direction)
 	var anomaly := acosh(maxf((radius / float(hyp["a"]) + 1.0) / float(hyp["e"]), 1.0))
 	var since_periapsis := (float(hyp["e"]) * sinh(anomaly) - anomaly) / float(hyp["n"])
 	hyp["t0"] = t_dep - signf(nu) * since_periapsis / 86400.0
@@ -1130,7 +1144,7 @@ static func _add_moon_escape_course(leg: Dictionary, a_plan: Dictionary, parked:
 	var orbit_velocity := (Kepler.position_at(parked_segment, t_dep + h_day) - Kepler.position_at(parked_segment, t_dep - h_day)) \
 			/ (2.0 * h_day * 86400.0)
 	var moon_hyp := _escape_hyperbola(float(bodies[origin_id]["gm_km3_s2"]), departure_point, orbit_velocity,
-			float(escape["v_inf_moon_kms"]), t_dep)
+			float(escape["v_inf_moon_kms"]), t_dep, Kepler.direction(parked_segment))
 	var step_a := _moon_far_course(leg, t_dep + 0.025)
 	var step_b := _moon_far_course(leg, t_dep + 0.05)
 	moon_hyp["delta"] = _asymptote_angle(moon_hyp, false) - (step_b - step_a).angle()
@@ -1149,10 +1163,12 @@ static func _mirrored(leg: Dictionary, position: Vector2) -> Vector2:
 
 ## A hyperbolic escape or approach around a body: periapsis radius rp at the angle phi (the point where the
 ## ship leaves / enters its orbit, so the path joins that orbit tangentially), speed at infinity v_inf (km/s).
-static func _hyperbola(mu: float, rp: float, phi: float, v_inf: float) -> Dictionary:
+## direction: 1 for a ship that sweeps round the body counter-clockwise, -1 for one that sweeps clockwise (the mirror
+## image about the axis through the periapsis).
+static func _hyperbola(mu: float, rp: float, phi: float, v_inf: float, direction := 1) -> Dictionary:
 	var v2 := v_inf * v_inf
 	var a_abs := mu / v2
-	return {"e": 1.0 + rp * v2 / mu, "a": a_abs, "n": sqrt(mu / pow(a_abs, 3.0)), "rp": rp, "phi": phi}
+	return {"e": 1.0 + rp * v2 / mu, "a": a_abs, "n": sqrt(mu / pow(a_abs, 3.0)), "rp": rp, "phi": phi, "dir": float(direction)}
 
 
 ## Position on the hyperbola the given number of seconds after (positive) or before (negative) the periapsis.
@@ -1163,12 +1179,12 @@ static func _hyperbola_pos(h: Dictionary, seconds: float) -> Vector2:
 	var anomaly := asinh(m / e)
 	for _i in 40:
 		anomaly -= (e * sinh(anomaly) - anomaly - m) / (e * cosh(anomaly) - 1.0)
-	return Vector2(a_abs * (e - cosh(anomaly)), a_abs * sqrt(e * e - 1.0) * sinh(anomaly)).rotated(float(h["phi"]))
+	return Vector2(a_abs * (e - cosh(anomaly)), float(h.get("dir", 1.0)) * a_abs * sqrt(e * e - 1.0) * sinh(anomaly)).rotated(float(h["phi"]))
 
 
 ## Direction (angle) the ship travels along the far arm of the hyperbola.
 static func _asymptote_angle(h: Dictionary, incoming: bool) -> float:
-	var slope := sqrt(float(h["e"]) * float(h["e"]) - 1.0)
+	var slope := sqrt(float(h["e"]) * float(h["e"]) - 1.0) * float(h.get("dir", 1.0))
 	return Vector2(1.0 if incoming else -1.0, slope).angle() + float(h["phi"])
 
 
@@ -1178,7 +1194,7 @@ static func _asymptote_shift(h: Dictionary, incoming: bool) -> Vector2:
 	var e := float(h["e"])
 	var a_abs := float(h["a"])
 	var anomaly := -12.0 if incoming else 12.0
-	var far := Vector2(a_abs * (e - cosh(anomaly)), a_abs * sqrt(e * e - 1.0) * sinh(anomaly)).rotated(float(h["phi"]))
+	var far := Vector2(a_abs * (e - cosh(anomaly)), float(h.get("dir", 1.0)) * a_abs * sqrt(e * e - 1.0) * sinh(anomaly)).rotated(float(h["phi"]))
 	var travel := Vector2.from_angle(_asymptote_angle(h, incoming))
 	var outward := -travel if incoming else travel
 	return far - outward * far.dot(outward)
@@ -1219,6 +1235,14 @@ static func transfer_leg_for_plan(a_plan: Dictionary, parked: Dictionary) -> Dic
 	var leg := {"parent": a_plan["frame"], "segment": a_plan["transfer_segment"], "t_start": a_plan["t_dep"],
 			"label": ("Orbit change around %s" if a_plan.get("orbit_change", false) else "Transfer orbit to %s") % a_plan["target_name"],
 			"kind": "transfer"}
+	if a_plan.get("midflight", false) and a_plan.has("mid_offsets"):
+		# A course change in flight: the ship may be somewhere else than the raw path says (for example near the moon it
+		# has just left, while the raw transfer starts at the planet's centre): start at the real place and fade it out.
+		var mid_anc := {}
+		for body_id in (a_plan["mid_offsets"] as Dictionary).keys():
+			mid_anc[str(body_id)] = {"offset": a_plan["mid_offsets"][body_id],
+					"ref": _leg_rel(leg, str(body_id), float(a_plan["t_dep"]))}
+		leg["anc_offsets"] = mid_anc
 	if not parked.is_empty() and str(parked["parent"]) == str(a_plan["origin_id"]) and not a_plan.get("midflight", false):
 		var base := _leg_rel(leg, str(a_plan["origin_id"]), float(a_plan["t_dep"]))
 		leg["from_body"] = str(a_plan["origin_id"])
@@ -1229,7 +1253,8 @@ static func transfer_leg_for_plan(a_plan: Dictionary, parked: Dictionary) -> Dic
 		if str(a_plan["frame"]) != str(a_plan["origin_id"]) and departure_speed > 0.01 and departure_point.length() > 1.0 \
 				and base.length() < 2.0 * departure_point.length():   # the transfer must start at the body itself
 			var origin_mu := float(bodies[str(a_plan["origin_id"])]["gm_km3_s2"])
-			var hyp := _hyperbola(origin_mu, departure_point.length(), departure_point.angle(), departure_speed)
+			var way := Kepler.direction(parked["segment"])   # (1 counter-clockwise parking orbit, -1 clockwise)
+			var hyp := _hyperbola(origin_mu, departure_point.length(), departure_point.angle(), departure_speed, way)
 			hyp["t0"] = float(a_plan["t_dep"])
 			# The route leaves tangentially: in the direction the ship is flying in its orbit. That is across the radius
 			# only at an apsis; on an eccentric orbit the hyperbola is made to pass through the departure point in the
@@ -1238,8 +1263,8 @@ static func transfer_leg_for_plan(a_plan: Dictionary, parked: Dictionary) -> Dic
 			var orbit_velocity := (Kepler.position_at(parked["segment"], float(a_plan["t_dep"]) + h_day) \
 					- Kepler.position_at(parked["segment"], float(a_plan["t_dep"]) - h_day)) / (2.0 * h_day * 86400.0)
 			var radius_now := departure_point.length()
-			var cos_gamma := departure_point.cross(orbit_velocity) / maxf(radius_now * orbit_velocity.length(), 1.0e-12)
-			if cos_gamma > 0.05 and cos_gamma < 0.98:   # a counter-clockwise orbit that is not across the radius here
+			var cos_gamma := float(way) * departure_point.cross(orbit_velocity) / maxf(radius_now * orbit_velocity.length(), 1.0e-12)
+			if cos_gamma > 0.05 and cos_gamma < 0.98:   # an orbit that is not across the radius here (the sign: the way it runs)
 				var v_h2 := departure_speed * departure_speed + 2.0 * origin_mu / radius_now
 				var ang_mom := radius_now * sqrt(v_h2) * cos_gamma
 				var p_semi := ang_mom * ang_mom / origin_mu
@@ -1247,7 +1272,7 @@ static func transfer_leg_for_plan(a_plan: Dictionary, parked: Dictionary) -> Dic
 				var nu := acos(clampf((p_semi / radius_now - 1.0) / e_h, -1.0, 1.0))
 				if orbit_velocity.dot(departure_point) < 0.0:
 					nu = -nu   # still on the way in: the periapsis of the hyperbola is ahead
-				hyp = _hyperbola(origin_mu, p_semi / (1.0 + e_h), departure_point.angle() - nu, departure_speed)
+				hyp = _hyperbola(origin_mu, p_semi / (1.0 + e_h), departure_point.angle() - float(way) * nu, departure_speed, way)
 				var anomaly := acosh(maxf((radius_now / float(hyp["a"]) + 1.0) / float(hyp["e"]), 1.0))
 				var since_periapsis := (float(hyp["e"]) * sinh(anomaly) - anomaly) / float(hyp["n"])
 				hyp["t0"] = float(a_plan["t_dep"]) - signf(nu) * since_periapsis / 86400.0
@@ -1279,12 +1304,13 @@ static func transfer_leg_for_plan(a_plan: Dictionary, parked: Dictionary) -> Dic
 				_add_moon_escape_course(leg, a_plan, parked)
 	var captures: Array = a_plan.get("capture_legs", [])
 	var fly_aero: Dictionary = a_plan.get("aero", {})
-	if captures.is_empty() and str(a_plan.get("outcome", "ok")) == "flyby" and fly_aero.get("enabled", false) \
+	var fly_propulsive: bool = bool(a_plan.get("flyby_propulsive", false))
+	if captures.is_empty() and str(a_plan.get("outcome", "ok")) == "flyby" and (fly_aero.get("enabled", false) or fly_propulsive) \
 			and str(a_plan["frame"]) != str(a_plan["target_id"]) and float(a_plan.get("arrival_energy", -1.0)) > 0.0:
 		# A fly-by: the ship swings round the target through the upper atmosphere (periapsis at the aerobraking
 		# altitude) and flies on. The local course is a hyperbola around the target; far away it is the transfer's own path.
 		var target_id := str(a_plan["target_id"])
-		var rp_fly := float(bodies[target_id]["radius_km"]) + float(fly_aero.get("h_km", 0.0))
+		var rp_fly := float(bodies[target_id]["radius_km"]) + float(fly_aero.get("h_km", 0.0)) if not fly_propulsive else float(a_plan["rp_t"])
 		var t_pass := float(a_plan["t_arr"])
 		var dt_fly := minf(1.0, 0.25 * float(a_plan["flight_days"]))
 		leg["to_body"] = target_id
@@ -1313,7 +1339,8 @@ static func transfer_leg_for_plan(a_plan: Dictionary, parked: Dictionary) -> Dic
 		# the course went straight through Earth, and through Ceres with an axis offset.)
 		if energy > 0.0 and str(a_plan["frame"]) != str(a_plan["target_id"]) and capture_point.length() > 1.0 \
 				and base_end.length() < APPROACH_MAX_MISS_KM:
-			var hyp_in := _hyperbola(float(a_plan["gm_target"]), capture_point.length(), capture_point.angle(), sqrt(2.0 * energy))
+			var capture_way := Kepler.direction(captures[0]["segment"])   # (a clockwise orbit: the approach sweeps clockwise)
+			var hyp_in := _hyperbola(float(a_plan["gm_target"]), capture_point.length(), capture_point.angle(), sqrt(2.0 * energy), capture_way)
 			var dt_in := minf(1.0, 0.25 * float(a_plan["flight_days"]))
 			var near_step := _leg_rel(leg, str(a_plan["target_id"]), float(a_plan["t_arr"]) - 0.5 * dt_in) - _leg_rel(leg, str(a_plan["target_id"]), float(a_plan["t_arr"]) - dt_in)
 			hyp_in["delta"] = _asymptote_angle(hyp_in, true) - near_step.angle()
@@ -1336,8 +1363,8 @@ static func transfer_leg_for_plan(a_plan: Dictionary, parked: Dictionary) -> Dic
 				sweep += previous_point.angle_to(point)
 			previous_point = point
 			have_previous = true
-		if sweep < -0.01:
-			leg["to_mirror"] = capture_point.angle()
+		if sweep < -0.01 and Kepler.direction(captures[0]["segment"]) > 0:
+			leg["to_mirror"] = capture_point.angle()   # (a clockwise orbit has its own mirrored hyperbola: nothing to mirror)
 	return leg
 
 
@@ -1455,9 +1482,19 @@ static func _burn_is_prograde(i: int) -> bool:
 	var dt := 30.0 / 86400.0
 	var before := leg_rel_with_offsets(before_leg, frame, t0) - leg_rel_with_offsets(before_leg, frame, t0 - dt)
 	var after := leg_rel_with_offsets(leg, frame, t0 + dt) - leg_rel_with_offsets(leg, frame, t0)
-	var result := (after - before).dot(before) >= 0.0
+	var change := after - before
+	var result := change.dot(before) >= 0.0
+	# B-047: the ship points along the thrust (the velocity change), so after the burn it is tail first if that points against
+	# the new velocity. Normally the same as during the burn; after a turn-round (the velocity reverses) it is the opposite.
+	leg["after_tail"] = change.dot(after) < 0.0
 	leg["prograde"] = result
 	return result
+
+
+## Is the ship tail first (against its direction of flight) right after the burn that starts leg i?
+static func _burn_after_tail(i: int) -> bool:
+	_burn_is_prograde(i)   # (works it out and keeps it)
+	return bool(legs[i]["after_tail"])
 
 
 ## The direction (angle on the screen, radians) in which the ship has to point for the axis-turning burn that starts
@@ -1500,10 +1537,12 @@ static func manoeuvre_windows() -> Array:
 				continue
 			var tail_first := is_pass or not _burn_is_prograde(i)
 			var wanted := 1.0 if tail_first else 0.0
+			var after := 1.0 if (is_pass or _burn_after_tail(i)) else 0.0   # (differs from wanted after a turn-round)
 			var t0 := float(leg["t_start"]) - 0.5 * span
 			result.append({"t0": t0, "t1": t0 + span, "tail_first": tail_first, "is_pass": is_pass, "label": str(leg["label"]),
-					"from_retro": previous, "lead": turn if wanted != previous else 0.0})
-			previous = wanted
+					"from_retro": previous, "lead": turn if wanted != previous else 0.0,
+					"after_retro": after, "t_mid": float(leg["t_start"])})
+			previous = after
 		if leg.has("flyby_t"):
 			var fly_span := float(leg["flyby_days"])
 			var fly_t0 := float(leg["flyby_t"]) - 0.5 * fly_span
@@ -1521,6 +1560,7 @@ static func attitude_at(jd: float) -> Dictionary:
 	var burn := 0
 	var fixed := 0.0          # 0 to 1: how far the ship has turned from its course to the fixed heading of an axis-turning burn
 	var fixed_angle := 0.0
+	var flips := 0            # turn-round burns passed so far (the velocity reversed at the middle of each): the view needs them
 	var windows := manoeuvre_windows()
 	for window: Dictionary in windows:
 		var wanted := 1.0 if bool(window["tail_first"]) else 0.0
@@ -1546,9 +1586,13 @@ static func attitude_at(jd: float) -> Dictionary:
 			retro = lerpf(from_retro, wanted, smoothstep(t0 - lead, t0, jd))
 			break
 		retro = wanted
+		var after_retro := float(window.get("after_retro", wanted))
+		if after_retro != wanted and jd >= float(window["t_mid"]):
+			retro = after_retro   # B-047: a turn-round: from the middle of the burn the velocity points the other way
+			flips += 1
 		if not bool(window["is_pass"]) and jd <= float(window["t1"]):
 			burn = -1 if wanted > 0.5 else 1
-	return {"retro": retro, "burn": burn, "fixed": fixed, "fixed_angle": fixed_angle}
+	return {"retro": retro, "burn": burn, "fixed": fixed, "fixed_angle": fixed_angle, "flips": flips}
 
 ## Radius (km) of the sphere of influence of a body (Laplace). Bodies where this is smaller than the body itself
 ## (tiny moons) have none: 0.
@@ -1642,7 +1686,7 @@ static func morph_at(jd: float) -> Dictionary:
 			# Insertion: the orbit shrinks from a very wide one with the same periapsis.
 			var rp_new := float(new_segment["semi_major_axis_km"]) * (1.0 - float(new_segment["eccentricity"]))
 			var wide := view_radius_km(str(leg["parent"]), jd) * 1.5
-			old_segment = AeroBraking._ellipse(1.0, rp_new, maxf(wide, rp_new * 2.0), jd, float(new_segment["argument_of_periapsis_deg"]), 0.0)
+			old_segment = AeroBraking._ellipse(1.0, rp_new, maxf(wide, rp_new * 2.0), jd, float(new_segment["argument_of_periapsis_deg"]), 0.0, Kepler.direction(new_segment))
 		var w := (jd - t0) / span
 		if leg.get("axis_turn", false) and str(before["parent"]) == str(leg["parent"]):
 			var turning := _axis_turn_orbit(old_segment, new_segment, float(leg["t_start"]), w)
