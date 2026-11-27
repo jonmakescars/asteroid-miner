@@ -362,6 +362,7 @@ static func advance(delta: float) -> void:
 		var lost_at_end := _loss_time()
 		var end_time := lost_at_end if lost_at_end > 0.0 else _plan_finish_time(running)
 		if time_jd >= end_time:
+			var next_plan := {}   # the second stage of a route via a planet, launched below
 			var aero: Dictionary = running.get("aero", {})
 			if str(running.get("outcome", "ok")) == "flyby":
 				# Too fast to be captured, and no burn could capture it: the ship flies past and goes on around the Sun.
@@ -381,9 +382,29 @@ static func advance(delta: float) -> void:
 				message = "Arrived at %s." % running["target_name"]
 				if aero.get("enabled", false):
 					message += " " + _take_aerobraking_effects(aero)
+				next_plan = running.get("follow_up", {})
 			plan = {}
 			saved_plan = {}
+			if not next_plan.is_empty():
+				_launch_follow_up(next_plan, float(running.get("t_launch", time_jd)))
 	_update_facilities()
+
+
+## Alpha v0.2.17: the end of stage 1 of a route via a planet (for example Earth to Phobos, via Mars) launches stage 2, the plan
+## from the planet orbit the ship is in to the moon (made by MissionPlanner.update_follow_up when the route was planned).
+static func _launch_follow_up(a_plan: Dictionary, t_launch: float) -> void:
+	var parked := parked_leg()
+	if parked.is_empty():
+		return
+	var transfer_leg := transfer_leg_for_plan(a_plan, parked)
+	set_morph_times(a_plan, transfer_leg)
+	a_plan["committed"] = true
+	a_plan["t_launch"] = t_launch   # (the mission time goes on from the launch of stage 1)
+	legs = [parked, transfer_leg]
+	legs.append_array(a_plan["capture_legs"])
+	plan = a_plan
+	warp_index = 0   # (the ship waits in the orbit for the window of stage 2; the time flow starts again slowly)
+	message += " On to %s: the departure burn is %s." % [a_plan["target_name"], date_text(float(a_plan["t_dep"]))]
 
 
 ## One line about the ship's current orbit for the top bar: periapsis and apoapsis altitude, the angle of the

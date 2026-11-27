@@ -711,7 +711,7 @@ func _on_target_changed() -> void:
 		# possible around the new body; the limits of the sliders and the aerobraking start again for the new body.
 		var new_id := _selected_target_id()
 		if new_id != "":
-			GameState.target_orbits[new_id] = _orbit_for_body(new_id, plan["target_orbit"])
+			GameState.target_orbits[new_id] = _orbit_for_body(new_id, plan.get("via_moon_orbit", plan["target_orbit"]))
 			_make_plan(false)
 			if not plan.is_empty():
 				last_target = _frame_id()
@@ -751,10 +751,10 @@ func _drop_draft(show_followed_course: bool) -> void:
 	plan = GameState.saved_plan
 	GameState.saved_plan = {}
 	if show_followed_course:
-		var index := destination_ids.find(str(plan["target_id"]))
+		var index := destination_ids.find(_control_body_id())
 		if index >= 0:
 			target_picker.select(index)
-		GameState.target_orbits[str(plan["target_id"])] = plan["target_orbit"]
+		GameState.target_orbits[_control_body_id()] = plan.get("via_moon_orbit", plan["target_orbit"])
 		_sync_aero()
 		_sync_orbit_control()
 		message = "Keeping the current course."
@@ -917,7 +917,10 @@ func _make_plan(keep_aero_off: bool) -> void:
 		plan = result
 		message = str(result.get("route_note", ""))
 		if aero_was_off and plan["aero"]["available"]:
+			AeroBraking.reserve_kms = float(plan.get("via_reserve_kms", 0.0))
 			AeroBraking.apply(plan, false, int(plan["aero"]["n"]), float(plan["aero"]["h_km"]))
+			AeroBraking.reserve_kms = 0.0
+			MissionPlanner.update_follow_up(plan)
 		_sync_aero()
 		_sync_orbit_control()
 
@@ -934,10 +937,16 @@ func _on_target_orbit_changed(rp_alt_km: float, ra_alt_km: float, offset_deg: fl
 func _sync_orbit_control() -> void:
 	if plan.is_empty():
 		return
-	var target: Dictionary = bodies[plan["target_id"]]
-	var orbit: Dictionary = plan["target_orbit"]
-	orbit_control.setup(float(target["radius_km"]), GameState.max_orbit_altitude_km(str(plan["target_id"])))
+	var control_id := _control_body_id()
+	var target: Dictionary = bodies[control_id]
+	var orbit: Dictionary = plan.get("via_moon_orbit", plan["target_orbit"])   # (on the way to a moon: the orbit around the moon)
+	orbit_control.setup(float(target["radius_km"]), GameState.max_orbit_altitude_km(control_id))
 	orbit_control.set_orbit(float(orbit["rp_alt_km"]), float(orbit["ra_alt_km"]), float(orbit["offset_deg"]), int(orbit.get("dir", 1)))
+
+
+## The body whose orbit the orbit control shows: the destination, which on the way to a moon is the moon (the plan itself ends at its planet).
+func _control_body_id() -> String:
+	return str(plan.get("via_moon_id", plan["target_id"]))
 
 
 ## Launches; if the plan will end badly (crash, burn-up, too slow, escape) the player must confirm first.
@@ -989,6 +998,7 @@ func _do_launch() -> void:
 	var transfer_leg := GameState.transfer_leg_for_plan(plan, GameState.parked_leg())
 	GameState.set_morph_times(plan, transfer_leg)
 	plan["committed"] = true
+	plan["t_launch"] = float(GameState.saved_plan.get("t_launch", time_jd)) if plan.get("midflight", false) else time_jd   # (for the mission time)
 	if plan.get("midflight", false):
 		# A course change: the flight so far stays, the old plan's later legs are replaced. No launch cost.
 		plan["legs_before"] = legs.duplicate()
@@ -1069,7 +1079,10 @@ func _nudge_altitude(delta_km: float) -> void:
 func _apply_aero(enabled: bool, passes: int, altitude_km: float, recenter := false) -> void:
 	if plan.is_empty() or plan["committed"]:
 		return
+	AeroBraking.reserve_kms = float(plan.get("via_reserve_kms", 0.0))
 	AeroBraking.apply(plan, enabled, passes, clampf(altitude_km, float(plan["aero"]["h_min_km"]), float(plan["aero"]["h_max_km"])), recenter)
+	AeroBraking.reserve_kms = 0.0
+	MissionPlanner.update_follow_up(plan)   # (stage 2 of a route via a planet starts from the orbit this leaves the ship in)
 	_sync_aero()
 
 
@@ -1121,6 +1134,15 @@ func _in_transit() -> bool:
 
 func _plan_dv_total() -> float:
 	return float(plan["dv_departure"]) + float(plan["dv_arrival"])
+
+
+## The delta-v of the whole route: on the way to a moon of another planet that includes the second stage (plan["follow_up"]).
+func _route_dv_total() -> float:
+	var total := _plan_dv_total()
+	var follow: Dictionary = plan.get("follow_up", {})
+	if not follow.is_empty():
+		total += float(follow["dv_departure"]) + float(follow["dv_arrival"])
+	return total
 
 
 func _body_rel(id: String, jd: float) -> Vector2:
@@ -1214,7 +1236,7 @@ func _update_ui() -> void:
 		warnings.append(str(plan["warning"]))
 	warning_label.text = "Warning: " + "\nWarning: ".join(warnings) if not warnings.is_empty() else ""
 	warning_label.visible = not warnings.is_empty()
-	var affordable := not plan.is_empty() and _plan_dv_total() <= GameState.dv_left_kms() + 0.00001
+	var affordable := not plan.is_empty() and _route_dv_total() <= GameState.dv_left_kms() + 0.00001
 	var window_open := not plan.is_empty() and time_jd < float(plan["t_dep"]) + LATE_LAUNCH_DAYS
 	var funded: bool = GameState.budget_eur >= GameState.mission_cost_eur or (not plan.is_empty() and plan.get("midflight", false))
 	launch_button.disabled = plan.is_empty() or plan["committed"] or not affordable or not window_open or not funded
@@ -1267,6 +1289,27 @@ func _heat_share_text(heat: float) -> String:
 	if capacity <= 0.0:
 		return "%.0f MJ/m2 (no heat shield)" % heat
 	return "%.0f%% of the shield capacity" % (100.0 * heat / capacity)
+
+
+## On the way to a moon of another planet: stage 1 is the plan itself (the arrival at the planet), stage 2 (the planet orbit to the
+## moon) is plan["follow_up"] and starts by itself when stage 1 is over.
+func _via_moon_line() -> String:
+	var moon_name := str(plan["via_moon_name"])
+	var host_radius := float(bodies[plan["target_id"]]["radius_km"])
+	var unit := UnitFormat.speed_kms_unit()
+	var text := "On the way to %s in two stages. Stage 1 (this plan): to %s, ending in an orbit of %s x %s %s (set by the route)" % [
+			moon_name, str(plan["target_name"]),
+			GameState.thousands(UnitFormat.length(float(plan["rp_t"]) - host_radius)),
+			GameState.thousands(UnitFormat.length(float(plan["ra_t"]) - host_radius)), UnitFormat.length_unit()]
+	var follow: Dictionary = plan.get("follow_up", {})
+	if not follow.is_empty():
+		return text + ". Stage 2 (starts by itself): %s to %s, departure %s (in %s), burn %.2f %s, arrival %s, capture %.2f %s into your orbit round %s. Whole route: %.2f %s." % [
+				plan["target_name"], moon_name, GameState.date_text(float(follow["t_dep"])), _span_text(float(follow["t_dep"]) - time_jd),
+				UnitFormat.speed_kms(float(follow["dv_departure"])), unit, GameState.date_text(float(follow["t_arr"])),
+				UnitFormat.speed_kms(float(follow["dv_arrival"])), unit, moon_name, UnitFormat.speed_kms(_route_dv_total()), unit]
+	if plan.has("follow_up_error"):
+		return text + ". Stage 2 cannot be planned: %s" % str(plan["follow_up_error"])
+	return text + ". Stage 2 (to %s) is not planned: stage 1 does not end in an orbit round %s." % [moon_name, str(plan["target_name"])]
 
 
 ## One line about the direction of the target orbit when it is not the usual one (the direction of the body's rotation), or
@@ -1391,10 +1434,25 @@ func _info_text() -> String:
 		lines.append("Plan: new orbit around %s" % plan["target_name"])
 	elif plan.get("midflight", false):
 		lines.append("Plan: course change to %s" % plan["target_name"])
+	elif plan.has("via_moon_id"):
+		lines.append("Plan: %s to %s (via %s)" % [bodies[plan["origin_id"]]["name"], plan["via_moon_name"], plan["target_name"]])
 	else:
 		lines.append("Plan: %s to %s" % [bodies[plan["origin_id"]]["name"], plan["target_name"]])
-	lines.append("Departure: %s (in %s)" % [GameState.date_text(float(plan["t_dep"])), _span_text(float(plan["t_dep"]) - time_jd)])
-	lines.append("Arrival: %s (flight %s)" % [GameState.date_text(float(plan["t_arr"])), _span_text(float(plan["flight_days"]))])
+	if plan["committed"] and plan.has("t_launch") and float(plan["t_dep"]) <= time_jd:
+		# (B-051) once the departure is past the days to it would be negative: the time since the launch goes on instead
+		lines.append("Mission time: %s (launched %s)" % [_span_text(time_jd - float(plan["t_launch"])), GameState.date_text(float(plan["t_launch"]))])
+	else:
+		lines.append("Departure: %s (in %s)" % [GameState.date_text(float(plan["t_dep"])), _span_text(float(plan["t_dep"]) - time_jd)])
+	lines.append("Arrival%s: %s (flight %s)" % [" at " + str(plan["target_name"]) if plan.has("via_moon_id") else "",
+			GameState.date_text(float(plan["t_arr"])), _span_text(float(plan["flight_days"]))])
+	if plan.has("follow_up"):
+		lines.append("Total mission time to %s: %s (flight to %s %s, then %s at %s and the transfer to %s)" % [
+				plan["via_moon_name"], _span_text(float(plan["via_total_days"])), plan["target_name"], _span_text(float(plan["flight_days"])),
+				_span_text(float(plan["via_wait_days"])), plan["target_name"], plan["via_moon_name"]])
+	elif plan.has("via_moon_id") and float(plan["via_wait_days"]) > 0.0:
+		lines.append("Total mission time to %s: about %s (flight %s + up to %s at %s for the moon to be in the right place; estimate)" % [
+				plan["via_moon_name"], _span_text(float(plan["flight_days"]) + float(plan["via_wait_days"])),
+				_span_text(float(plan["flight_days"])), _span_text(float(plan["via_wait_days"])), plan["target_name"]])
 	if not plan["committed"] and not plan.get("midflight", false):
 		lines.append("Launch cost: %s EUR" % GameState.thousands(GameState.mission_cost_eur))
 	if plan.get("flyby_propulsive", false):
@@ -1412,6 +1470,8 @@ func _info_text() -> String:
 		else:
 			axis_line += "; no turn needed."
 		lines.append(axis_line)
+	if plan.has("via_moon_id"):
+		lines.append(_via_moon_line())
 	var way_line := _direction_line()
 	if way_line != "":
 		lines.append(way_line)
@@ -1420,7 +1480,7 @@ func _info_text() -> String:
 	lines.append_array(_aero_lines())
 	if message != "":
 		lines.append(message)
-	if not plan["committed"] and _plan_dv_total() > GameState.dv_left_kms():
+	if not plan["committed"] and _route_dv_total() > GameState.dv_left_kms():
 		lines.append("Not enough fuel for this mission. Refuel, or build a stronger ship on the ship design screen.")
 	elif plan["committed"]:
 		lines.append(("Mission launched (the departure burn can still be aborted)." if not plan["departure_done"] else "Mission launched.") if time_jd < float(plan["t_arr"]) else "Arrived at %s." % plan["target_name"])
@@ -1647,6 +1707,15 @@ func _draw_local_route(frame_id: String, centre: Vector2, px_per_km: float) -> v
 				if (transfer_leg.get("to_hyp", {}) as Dictionary).has("delta_out"):   # a fly-by: the way out round the body
 					draw_polyline(_route_points(transfer_leg, frame_id, float(plan["t_arr"]), 1.0, radius_km, centre, px_per_km, float(plan["t_arr"]) + 60.0), route_colour, _lw(1.5), true)
 	var captures: Array = plan.get("capture_legs", [])
+	var follow: Dictionary = plan.get("follow_up", {})   # (0.2.18) stage 2 of a route via a planet: its transfer and its orbits are drawn too
+	if not follow.is_empty():
+		var follow_segment: Dictionary = follow.get("transfer_segment", {})
+		if str(follow["frame"]) == frame_id and not follow_segment.is_empty() and float(follow_segment.get("semi_major_axis_km", -1.0)) > 0.0:
+			var arc := PackedVector2Array()
+			for point in Kepler.orbit_points(follow_segment, _sample_count(float(follow_segment["semi_major_axis_km"]) * px_per_km, _half_screen(), 64)):
+				arc.append(_to_screen(point, centre, px_per_km))
+			draw_polyline(arc, _fade(_course(0.6)), _lw(1.5), true)
+		captures = captures + (follow.get("capture_legs", []) as Array)
 	for capture_leg in captures:
 		if str(capture_leg["parent"]) != frame_id:
 			continue

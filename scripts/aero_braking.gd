@@ -27,6 +27,7 @@ const INTERFACE_DENSITY := 1.0e-8        # the pass starts where the density is 
 const G0 := 9.80665
 const BAND_KM := 8.0                     # the periapsis slider covers this far above and below the setting
 
+static var reserve_kms := 0.0   # (0.2.18) propellant kept back for a later stage of the route (the second stage of a plan via a planet), km/s
 static var _acc := PackedFloat64Array([0.0, 0.0, 0.0])   # scratch: radial accel, tangential accel, drag accel
 
 
@@ -400,7 +401,7 @@ static func setup_plan(plan: Dictionary) -> void:
 		"gm": float(plan["gm_target"]), "radius": float(target["radius_km"]), "atmosphere": atmosphere,
 		"ra_t": float(plan["ra_t"]), "energy": float(work["arrival_energy"]),
 		"soi_km": GameState.context_radius_km(str(plan["target_id"]), float(work["t_arr"])),
-		"burn_budget_kms": maxf(0.0, GameState.dv_left_kms() - float(work["dv_departure"])),
+		"burn_budget_kms": maxf(0.0, _dv_available() - float(work["dv_departure"])),
 		"beta": mass / (DRAG_COEFFICIENT * area), "nose": sqrt(area / PI),
 		"shield_left_mj_m2": GameState.shield_left_mj_m2(),
 		"shield_capacity_mj_m2": shield_capacity_mj_m2(GameState.ship_shield_cm),
@@ -627,7 +628,7 @@ static func apply(plan: Dictionary, enabled: bool, n: int, h_km: float, recenter
 		return
 	aero["enabled"] = true
 	var ctx: Dictionary = aero["ctx"]
-	ctx["burn_budget_kms"] = maxf(0.0, GameState.dv_left_kms() - float(plan["dv_departure"]))
+	ctx["burn_budget_kms"] = maxf(0.0, _dv_available() - float(plan["dv_departure"]))
 	ctx["energy"] = float(plan["arrival_energy"])   # (an orbit change: the energy follows the periapsis the first burn sets)
 	var gm := float(ctx["gm"])
 	var radius := float(ctx["radius"])
@@ -655,7 +656,7 @@ static func apply(plan: Dictionary, enabled: bool, n: int, h_km: float, recenter
 			escape_needed = escape_capture_dv(gm, radius + h_km, float(result["energy"]), rp_t, ra_t) + axis_turn_dv(plan)
 		else:
 			early_leave = true
-		if left_before_last and escape_needed + assist <= GameState.dv_left_kms() - float(plan["dv_departure"]):
+		if left_before_last and escape_needed + assist <= _dv_available() - float(plan["dv_departure"]):
 			status = "ok"
 			escape_burn = escape_needed
 			aero["burn_assist"] = true
@@ -663,7 +664,7 @@ static func apply(plan: Dictionary, enabled: bool, n: int, h_km: float, recenter
 			status = "flyby"
 	if status == "ok" and assist > 0.0 and escape_burn < 0.0:
 		var finishing := final_dv(gm, radius + h_km, float(result["ra"]), rp_t, ra_t) + axis_turn_dv(plan)
-		if assist + finishing > GameState.dv_left_kms() - float(plan["dv_departure"]) + 1.0e-6:
+		if assist + finishing > _dv_available() - float(plan["dv_departure"]) + 1.0e-6:
 			status = "flyby"
 			budget_short = true
 	aero["heat"] = float(result["heat"])
@@ -751,3 +752,8 @@ static func apply(plan: Dictionary, enabled: bool, n: int, h_km: float, recenter
 	plan["t_end"] = t
 	aero["days"] = t - float(plan["t_arr"])
 	_set_target_outcome(plan)
+
+
+## The propellant the plan may use at the target (km/s): what is left, less what a later stage needs (reserve_kms).
+static func _dv_available() -> float:
+	return GameState.dv_left_kms() - reserve_kms

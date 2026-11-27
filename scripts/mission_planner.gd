@@ -11,6 +11,8 @@ const MOON_WINDOW_STEPS := 48         # departure times tried over one orbit of 
 const MOON_ESCAPE_CLEARANCE_KM := 300.0   # an escape orbit from a moon has to pass the planet at least this far above its surface
 const NEARLY_CIRCULAR := 0.05         # if periapsis and apoapsis differ by less than this share of the apoapsis, the axis is ignored
 const AXIS_TOLERANCE_DEG := 10.0      # a departure from an elliptical orbit may be this far off the periapsis direction
+const VIA_PERIAPSIS_SHARE := 0.9      # on the way to a moon of another planet: the periapsis of the orbit round the planet, as a share of the moon's distance
+const VIA_APSIS_MATCH := 0.02         # the apoapsis counts as "at the orbit of the moon" within this share of the moon's distance
 
 
 ## The destinations offered at a body: the bodies in its own sphere of influence (its moons, and
@@ -31,6 +33,13 @@ static func destinations(origin_id: String) -> Array:
 	for id in children["sun"]:
 		if id != origin_id and not result.has(id):
 			result.append(id)
+	# The moons of the other planets (on the way to them the ship aerobrakes at the planet, see _plan_via_planet).
+	for planet in children["sun"]:
+		if str(planet) == origin_id or str(planet) == str(origin_parent):
+			continue
+		for id in children[planet]:
+			if id != origin_id and not result.has(id):
+				result.append(id)
 	return result
 
 
@@ -214,6 +223,10 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 		var v_inf := float(TransferPlanner.arrival_dv(transfer, target_fn, target_gm, capture_radius)["v_inf_kms"])
 		arrival_energy = 0.5 * v_inf * v_inf
 
+	elif target_parent != null and target_parent != "sun" and target_parent != origin_id and target_parent != origin_parent:
+		# A moon of another planet: first to the planet (see _plan_via_planet).
+		return _plan_via_planet(origin_id, orbit_segment, target_id, t_start, target_orbit, fixed_departure, quick)
+
 	else:
 		return {"error": "No route to %s from here yet." % target["name"]}
 
@@ -265,6 +278,90 @@ static func make_plan(origin_id: String, orbit_segment: Dictionary, target_id: S
 		return plan
 	AeroBraking.setup_plan(plan)   # adds the aerobraking data and the capture legs
 	return plan
+
+
+## A moon of another planet (for example Earth to Phobos), stage 1 of 2 (Alpha v0.2.15, orbit controls changed in 0.2.16): the plan
+## is the arrival at the planet, with aerobraking if that is cheaper, into an orbit whose apoapsis is at the orbit of the moon and
+## whose periapsis is a bit lower (VIA_PERIAPSIS_SHARE of the moon's distance; the total cost of the way to the moon is the same
+## for any periapsis). That Mars-side orbit is worked out here and cannot be edited. The target orbit of the player (the orbit
+## control, GameState.target_orbits[moon]) is the orbit around the MOON (plan["via_moon_orbit"]); it is used for the estimate of
+## the capture at the moon (via_moon_dv). Stage 2, the transfer to the moon from the planet orbit, is planned when the ship is
+## there (the usual planet-to-moon plan).
+static func _plan_via_planet(origin_id: String, orbit_segment: Dictionary, moon_id: String, t_start: float,
+		target_orbit: Dictionary, fixed_departure: float, quick: bool) -> Dictionary:
+	var bodies := GameState.bodies
+	var moon: Dictionary = bodies[moon_id]
+	var host_id := str(moon["parent"])
+	var host: Dictionary = bodies[host_id]
+	var host_radius := float(host["radius_km"])
+	var moon_distance := GameState.body_rel(moon_id, t_start).length()
+	var host_orbit := {"rp_alt_km": VIA_PERIAPSIS_SHARE * moon_distance - host_radius, "ra_alt_km": moon_distance - host_radius,
+			"offset_deg": 0.0, "dir": GameState.natural_orbit_dir(host_id)}
+	var moon_orbit := default_target_orbit(moon_id)
+	moon_orbit.merge(target_orbit, true)
+	moon_orbit["dir"] = -1 if int(moon_orbit.get("dir", 1)) < 0 else 1
+	var pair := OrbitControl.normalise(float(moon_orbit["rp_alt_km"]), float(moon_orbit["ra_alt_km"]), "rp")
+	moon_orbit["rp_alt_km"] = pair.x
+	moon_orbit["ra_alt_km"] = pair.y
+	# Stage 2 will need about the capture at the moon (+ 10 %): the aerobraking at the planet keeps that propellant back.
+	var reserve_gm := float(host["gm_km3_s2"])
+	var reserve_rp := VIA_PERIAPSIS_SHARE * moon_distance
+	var reserve_v := absf(sqrt(reserve_gm / moon_distance) - sqrt(2.0 * reserve_gm * reserve_rp / (moon_distance * (reserve_rp + moon_distance))))
+	var reserve := 1.1 * TransferPlanner.capture_dv(float(moon["gm_km3_s2"]), 0.5 * reserve_v * reserve_v,
+			float(moon["radius_km"]) + float(moon_orbit["rp_alt_km"]), float(moon["radius_km"]) + float(moon_orbit["ra_alt_km"]))
+	AeroBraking.reserve_kms = reserve
+	var plan := make_plan(origin_id, orbit_segment, host_id, t_start, host_orbit, fixed_departure, quick)
+	AeroBraking.reserve_kms = 0.0
+	if plan.has("error"):
+		return plan
+	plan["via_reserve_kms"] = reserve
+	plan["via_moon_id"] = moon_id
+	plan["via_moon_name"] = moon["name"]
+	plan["via_moon_orbit"] = moon_orbit
+	plan["via_moon_dv"] = -1.0
+	plan["via_wait_days"] = 0.0
+	var gm := float(host["gm_km3_s2"])
+	var rp := float(plan["rp_t"])
+	var ra := float(plan["ra_t"])
+	if absf(ra - moon_distance) <= VIA_APSIS_MATCH * moon_distance:
+		# At the apoapsis the ship is at the orbit of the moon, a bit slower than the moon: what is left is the difference in
+		# speed, which the capture by the moon has to take away (the moon's pull is small).
+		var v_relative := absf(sqrt(gm / ra) - sqrt(2.0 * gm * rp / (ra * (rp + ra))))
+		var moon_radius := float(moon["radius_km"])
+		plan["via_moon_dv"] = TransferPlanner.capture_dv(float(moon["gm_km3_s2"]), 0.5 * v_relative * v_relative,
+				moon_radius + float(moon_orbit["rp_alt_km"]), moon_radius + float(moon_orbit["ra_alt_km"]))
+		# The ship meets the moon at the apoapsis only when the phases fit: at most one synodic period of the two orbits.
+		var ship_period := TAU * sqrt(pow(0.5 * (rp + ra), 3.0) / gm) / 86400.0
+		var rate_difference := absf(1.0 / ship_period - 1.0 / _period_days(moon_id))
+		plan["via_wait_days"] = minf(1.0 / maxf(rate_difference, 1.0e-6), MAX_ORBIT_SEARCH_PERIODS * ship_period)
+	update_follow_up(plan)
+	return plan
+
+
+## Stage 2 of a plan via a planet (Alpha v0.2.17): the usual planet-to-moon plan from the orbit the ship is in when stage 1 is
+## over (the last orbit leg of the capture), into the orbit round the moon the player chose. It is stored in plan["follow_up"]
+## and launched by GameState at the end of stage 1, so the whole route is one plan for the player: via_moon_dv is its real
+## cost (replacing the estimate), via_wait_days the time the ship waits at the planet for the window, via_total_days the time
+## from the departure to the end of the capture at the moon. It has to be made again whenever stage 1 changes (the aerobraking
+## settings change the orbit and the time the ship is in it), see OrbitView._apply_aero.
+static func update_follow_up(plan: Dictionary) -> void:
+	if not plan.has("via_moon_id"):
+		return
+	plan.erase("follow_up")
+	plan.erase("follow_up_error")
+	var captures: Array = plan.get("capture_legs", [])
+	if captures.is_empty() or str(plan.get("outcome", "ok")) != "ok" or str(captures[captures.size() - 1]["kind"]) != "orbit":
+		return
+	var parked: Dictionary = captures[captures.size() - 1]
+	var t_free := float(parked["t_start"])
+	var follow := make_plan(str(plan["target_id"]), parked["segment"], str(plan["via_moon_id"]), t_free, plan["via_moon_orbit"], -1.0, false)
+	if follow.has("error"):
+		plan["follow_up_error"] = str(follow["error"])
+		return
+	plan["follow_up"] = follow
+	plan["via_moon_dv"] = float(follow["dv_departure"]) + float(follow["dv_arrival"])
+	plan["via_wait_days"] = float(follow["t_dep"]) - t_free
+	plan["via_total_days"] = GameState._plan_finish_time(follow) - float(plan["t_dep"])
 
 
 ## The transfer for a plan: the next launch window after t_start, or, with fixed_departure (a Julian Date), a
