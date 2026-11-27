@@ -944,6 +944,16 @@ func _sync_orbit_control() -> void:
 	orbit_control.set_orbit(float(orbit["rp_alt_km"]), float(orbit["ra_alt_km"]), float(orbit["offset_deg"]), int(orbit.get("dir", 1)))
 
 
+## The moment the mission time is zero: the departure burn of the plan (in a launched plan the time stored at the launch; in a course
+## change the zero of the plan it replaces, so the counter goes on).
+func _mission_zero() -> float:
+	if plan.has("t_zero"):
+		return float(plan["t_zero"])
+	if plan.get("midflight", false) and GameState.saved_plan.has("t_zero"):
+		return float(GameState.saved_plan["t_zero"])
+	return float(plan["t_dep"])
+
+
 ## The body whose orbit the orbit control shows: the destination, which on the way to a moon is the moon (the plan itself ends at its planet).
 func _control_body_id() -> String:
 	return str(plan.get("via_moon_id", plan["target_id"]))
@@ -998,7 +1008,7 @@ func _do_launch() -> void:
 	var transfer_leg := GameState.transfer_leg_for_plan(plan, GameState.parked_leg())
 	GameState.set_morph_times(plan, transfer_leg)
 	plan["committed"] = true
-	plan["t_launch"] = float(GameState.saved_plan.get("t_launch", time_jd)) if plan.get("midflight", false) else time_jd   # (for the mission time)
+	plan["t_zero"] = _mission_zero()   # (the mission time counts from the departure of the first plan, kept in a course change)
 	if plan.get("midflight", false):
 		# A course change: the flight so far stays, the old plan's later legs are replaced. No launch cost.
 		plan["legs_before"] = legs.duplicate()
@@ -1438,11 +1448,12 @@ func _info_text() -> String:
 		lines.append("Plan: %s to %s (via %s)" % [bodies[plan["origin_id"]]["name"], plan["via_moon_name"], plan["target_name"]])
 	else:
 		lines.append("Plan: %s to %s" % [bodies[plan["origin_id"]]["name"], plan["target_name"]])
-	if plan["committed"] and plan.has("t_launch") and float(plan["t_dep"]) <= time_jd:
-		# (B-051) once the departure is past the days to it would be negative: the time since the launch goes on instead
-		lines.append("Mission time: %s (launched %s)" % [_span_text(time_jd - float(plan["t_launch"])), GameState.date_text(float(plan["t_launch"]))])
+	# (0.2.19) One counter: the mission time is zero at the departure (the launch window), counts down to it from the moment the plan is made and up from it.
+	var since_zero := time_jd - _mission_zero()
+	if since_zero < 0.0:
+		lines.append("Mission time: -%s (launch %s)" % [_span_text(-since_zero), GameState.date_text(_mission_zero())])
 	else:
-		lines.append("Departure: %s (in %s)" % [GameState.date_text(float(plan["t_dep"])), _span_text(float(plan["t_dep"]) - time_jd)])
+		lines.append("Mission time: %s (launched %s)" % [_span_text(since_zero), GameState.date_text(_mission_zero())])
 	lines.append("Arrival%s: %s (flight %s)" % [" at " + str(plan["target_name"]) if plan.has("via_moon_id") else "",
 			GameState.date_text(float(plan["t_arr"])), _span_text(float(plan["flight_days"]))])
 	if plan.has("follow_up"):

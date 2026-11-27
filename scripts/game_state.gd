@@ -386,20 +386,20 @@ static func advance(delta: float) -> void:
 			plan = {}
 			saved_plan = {}
 			if not next_plan.is_empty():
-				_launch_follow_up(next_plan, float(running.get("t_launch", time_jd)))
+				_launch_follow_up(next_plan, float(running.get("t_zero", running["t_dep"])))
 	_update_facilities()
 
 
 ## Alpha v0.2.17: the end of stage 1 of a route via a planet (for example Earth to Phobos, via Mars) launches stage 2, the plan
 ## from the planet orbit the ship is in to the moon (made by MissionPlanner.update_follow_up when the route was planned).
-static func _launch_follow_up(a_plan: Dictionary, t_launch: float) -> void:
+static func _launch_follow_up(a_plan: Dictionary, t_zero: float) -> void:
 	var parked := parked_leg()
 	if parked.is_empty():
 		return
 	var transfer_leg := transfer_leg_for_plan(a_plan, parked)
 	set_morph_times(a_plan, transfer_leg)
 	a_plan["committed"] = true
-	a_plan["t_launch"] = t_launch   # (the mission time goes on from the launch of stage 1)
+	a_plan["t_zero"] = t_zero   # (the mission time goes on from the departure of stage 1)
 	legs = [parked, transfer_leg]
 	legs.append_array(a_plan["capture_legs"])
 	plan = a_plan
